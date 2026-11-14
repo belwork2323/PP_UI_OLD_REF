@@ -1,0 +1,1170 @@
+import { QCDivisionDetailsModel } from "../../../data/models/user/QCDivisionApiModel";
+import {
+  createDefaultQualityControlFormState,
+  expandDivisionDetailSections,
+  mapQCDivisionDetailsForDisplay,
+  type QCDivisionDetailView,
+  type QualityControlFormState,
+} from "../../../data/models/user/QualityControlFormModel";
+import { fetchQcSchema, hydrateQcValuesFromSections, QcApiDivision, QcApiSubType, QcInhibitorType } from "@/data/models/user/qc/qcApiTypes";
+import type { SchemaDocumentV2, SchemaFormValues, SchemaSectionSubmission } from "@/data/models/shared/sectionFormTypes";
+import { getQcSchemaCacheKey } from "./qcFlowConfig";
+import { shouldSkipQcSchemaFetch } from "./qcDivisionRegistry";
+import {
+  buildDivisionEntryLabel,
+  buildMotorDivisionGroupKey,
+  createDivisionEntryId,
+  parseMotorDivisionGroupKey,
+} from "./qcDivisionEntries";
+import type { QcDivisionEntry, QcDivisionEntryValues } from "./qcDivisionEntryTypes";
+import { getHardwareSectionIdForSubType, QC_HARDWARE_ATTACHMENTS_SECTION_ID, QC_HARDWARE_PROCESS_OPTIONS } from "./qcHardwareConfig";
+import {
+  applyHardwareSharedUploadsToEntryValues,
+  buildHardwareProcessValuesFromPayload,
+} from "./qcHardwareDivisionDetails";
+import {
+  createInitialHardwareProcessValues,
+  hydrateHardwareProcessValuesFromSections,
+  hydrateHardwareUploadValuesFromSections,
+  isHardwareNestedMotorDetail,
+  isQcHardwareProcessSubType,
+  listHardwareMotorsFromDetailData,
+  mergeHardwareUploadValuesIntoEntryValues,
+} from "./qcHardwareTables";
+import {
+  createInitialCastingValues,
+  hydrateCastingValuesFromSections,
+  isCastingNestedMotorDetail,
+} from "./qcCastingTables";
+import { buildCastingValuesFromPayload } from "./qcCastingDivisionDetails";
+import {
+  createInitialCuringValues,
+  hydrateCuringValuesFromSections,
+} from "./qcCuringTables";
+import { normalizeQcCuringType } from "./qcCuringConfig";
+import {
+  createInitialDeCoringValues,
+  hydrateDeCoringValuesFromSections,
+} from "./qcDeCoringTables";
+import {
+  hydrateTrimmingValuesFromMotorDetail,
+  isTrimmingNestedMotorDetail,
+  trimmingMotorDetailToSections,
+} from "./qcTrimmingTables";
+import { resolveQcSectionInhibitorType } from "./qcPostCureConfig";
+import {
+  createInitialPostCureValues,
+  hydratePostCureValuesFromMotorDetail,
+  hydratePostCureValuesFromSections,
+  postCureFormValuesHaveUserData,
+  postCureMotorDetailToSections,
+} from "./qcPostCureTables";
+import {
+  buildInitialPostCureValuesForMotor,
+  resolvePostCureSelectionFromMotorDetails,
+} from "./qcPostCureDivisionDetails";
+import {
+  createInitialNdtValues,
+  hydrateNdtValuesFromSections,
+  ndtFormValuesHaveUserData,
+} from "./qcNdtTables";
+import { buildInitialNdtValuesForMotor } from "./qcNdtDivisionDetails";
+import {
+  buildInitialStfValuesForMotor,
+  createInitialStfValues,
+  stfFormValuesHaveUserData,
+} from "./qcStfTables";
+import {
+  createInitialWeighmentValues,
+  hydrateWeighmentValuesFromRecord,
+  hydrateWeighmentValuesFromSections,
+  weighmentFormValuesHaveUserData,
+  weighmentMotorDetailToSections,
+} from "./qcWeighmentTables";
+import { buildInitialWeighmentValuesForMotor } from "./qcWeighmentDivisionDetails";
+import {
+  createInitialPropellantValues,
+  hydratePropellantValuesFromSections,
+} from "./qcPropellantTables";
+import {
+  groupMixingDetailSections,
+  QC_MIXING_PREMIX_SECTION_ID,
+  QC_MIXING_VISCOSITY_SECTION_ID,
+} from "./qcMixingConfig";
+import {
+  createInitialPremixDetailsValues,
+  createInitialViscosityValues,
+  hydrateMixingDetailsValuesFromSections,
+  hydrateMixingDivisionFromFormData,
+  hydrateViscosityValuesFromSections,
+  resolveMixingQcFormData,
+} from "./qcMixingTables";
+import {
+  createInitialRevalidationSchemaValues,
+  hydrateRevalidationValuesFromSections,
+  mapDivisionDetailsToRevalidationValues,
+} from "./qcRawMaterialRevalidationTable";
+import { fetchQcSchemaWithInflightDedup, getCachedQcSchema, mapWithConcurrency } from "./qcSchemaFetchCache";
+import {
+  buildProcessingMaterialEntry,
+  fetchProcessingMaterialCatalog,
+  fetchQcProcessingMaterialSchema,
+  hydrateProcessingMaterialValuesFromSeed,
+  parseProcessingMaterialsFromDivisionDetails,
+  parseWeightmentSheetFromDivisionDetails,
+  withCatalogRmpFormTemplate,
+} from "./qcProcessingMaterials";
+import type { RawMaterialPrepWeightmentSheet } from "../../../data/models/user/RawMaterialPreparationModel";
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const pickMotorIdFromUnknown = (value: unknown): string => {
+  const rec = asRecord(value);
+  if (!rec) return "";
+  return String(rec.motorIdNo ?? rec.motorId ?? rec.id ?? "").trim();
+};
+
+const getEntryKind = (
+  division: QcApiDivision,
+  subType: QcApiSubType,
+): { flowKey: string; kind: QcDivisionEntry["kind"] } => {
+  if (
+    division === "RAW_MATERIAL_REVALIDATION" ||
+    (division === "RAW_MATERIAL" && subType === "RAW_MATERIAL_REVALIDATION")
+  ) {
+    return { flowKey: "RAW_MATERIAL", kind: "REVALIDATION" };
+  }
+  if (
+    division === "RAW_MATERIAL_PROCESSING" ||
+    (division === "RAW_MATERIAL" && subType === "RAW_MATERIAL_PROCESSING")
+  ) {
+    const kind =
+      subType === "SOLID_PROCESSING"
+        ? "SOLID_PREMIX"
+        : subType === "LIQUID_PROCESSING"
+          ? "LIQUID_PREMIX"
+          : "BOTH_PREMIX";
+    return { flowKey: "RAW_MATERIAL", kind };
+  }
+  if (division === "MIXING") {
+    return {
+      flowKey: "MIXING",
+      kind: subType === "FINAL_MIX" ? "MIXING_FINAL_MIX" : "MIXING_PREMIX",
+    };
+  }
+  if (division === "HARDWARE") return { flowKey: "HARDWARE", kind: "HARDWARE_PROCESS" };
+  if (division === "CASTING") return { flowKey: "CASTING", kind: "CASTING_MOTOR" };
+  if (division === "CURING") return { flowKey: "CURING", kind: "CURING_MOTOR" };
+  if (division === "TRIMMING") return { flowKey: "TRIMMING", kind: "TRIMMING_MOTOR" };
+  if (division === "DE_CORING") return { flowKey: "DE_CORING", kind: "DE_CORING_MOTOR" };
+  if (division === "POST_CURE" || division === "POST_CURE_OPERATION") {
+    return { flowKey: "POST_CURE", kind: "POST_CURE_MOTOR" };
+  }
+  if (division === "NDT") return { flowKey: "NDT", kind: "NDT_MOTOR" };
+  if (division === "PROPELLANT_PROPERTIES" || division === "QC") {
+    return { flowKey: "QC", kind: "PROPELLANT_MOTOR" };
+  }
+  if (division === "WEIGHTMENT") {
+    return { flowKey: "WEIGHTMENT", kind: "WEIGHTMENT_MOTOR" };
+  }
+  if (division === "STATIC_TEST_FACILITY") return { flowKey: "STATIC_TEST_FACILITY", kind: "STF" };
+  return { flowKey: division, kind: "SIMPLE" };
+};
+
+export async function hydrateQcDivisionFormFromDetails(
+  detailsData: QCDivisionDetailsModel,
+  subDepartmentId: number,
+): Promise<QualityControlFormState> {
+  const effectiveSubDepartmentId = Number(detailsData.subDepartmentId || subDepartmentId);
+  const rawDivisionDetails = detailsData.divisionDetails;
+  const hasDivisionDetails = Array.isArray(rawDivisionDetails) && rawDivisionDetails.length > 0;
+  const detailsRecord =
+    (QCDivisionDetailsModel.toPlainRecord(detailsData) as Record<string, unknown> | null) ??
+    (detailsData as unknown as Record<string, unknown>);
+
+  if (!hasDivisionDetails || !effectiveSubDepartmentId) {
+    return QCDivisionDetailsModel.toFormState(detailsData);
+  }
+
+  let resolvedData = QCDivisionDetailsModel.toFormState(detailsData);
+  const entries: QcDivisionEntry[] = [];
+  const entryValues: Record<string, QcDivisionEntryValues> = {};
+  let processingWeightmentSheet: RawMaterialPrepWeightmentSheet | null = null;
+  const schemasByKey: Record<string, SchemaDocumentV2> = {};
+  const schemaFetchQueue = new Map<
+    string,
+    { division: QcApiDivision; subType: QcApiSubType; inhibitorType?: QcInhibitorType }
+  >();
+  const mixingFinalMixDetailSections: SchemaSectionSubmission[] = [];
+  let domainMixingFinalMixDetailsValues: SchemaFormValues | undefined;
+  let mixingDomainHydrated = false;
+
+  const enqueueSchema = (
+    division: QcApiDivision,
+    subType: QcApiSubType,
+    inhibitorType?: QcInhibitorType,
+  ) => {
+    if (shouldSkipQcSchemaFetch(division, subType)) return "";
+    const key = getQcSchemaCacheKey(division, subType, inhibitorType);
+    if (!schemaFetchQueue.has(key)) {
+      schemaFetchQueue.set(key, { division, subType, inhibitorType });
+    }
+    return key;
+  };
+
+  const rawMaterialTypeForLabel = (division: QcApiDivision, subType?: QcApiSubType): string => {
+    if (
+      division === "RAW_MATERIAL_REVALIDATION" ||
+      (division === "RAW_MATERIAL" && subType === "RAW_MATERIAL_REVALIDATION")
+    ) {
+      return "RAW_MATERIAL_REVALIDATION";
+    }
+    if (
+      division === "RAW_MATERIAL_PROCESSING" ||
+      (division === "RAW_MATERIAL" && subType === "RAW_MATERIAL_PROCESSING")
+    ) {
+      return "RAW_MATERIAL_PROCESSING";
+    }
+    return "";
+  };
+
+  const processingTypeForLabel = (_division: QcApiDivision, subType: QcApiSubType): string => {
+    if (subType === "SOLID_PROCESSING" || subType === "LIQUID_PROCESSING") return subType;
+    return "";
+  };
+
+  for (const detail of rawDivisionDetails) {
+    try {
+    const divisionRaw = String(detail.division ?? "")
+      .trim()
+      .toUpperCase();
+    const division = (divisionRaw === "WEIGHMENT" ? "WEIGHTMENT" : divisionRaw) as QcApiDivision;
+    const detailSubType = detail.subType as QcApiSubType;
+    const detailData = detail.data ?? detail;
+    const processingSeeds =
+      division === "RAW_MATERIAL_PROCESSING" ||
+      (division === "RAW_MATERIAL" && detailSubType === "RAW_MATERIAL_PROCESSING")
+        ? parseProcessingMaterialsFromDivisionDetails({ data: detailData })
+        : [];
+
+    if (processingSeeds.length > 0) {
+      const detailSheet = parseWeightmentSheetFromDivisionDetails({ data: detailData });
+      if (
+        !processingWeightmentSheet &&
+        (detailSheet.mixerBuildingNumber || detailSheet.weightmentDetails.length > 0)
+      ) {
+        processingWeightmentSheet = detailSheet;
+      }
+      const catalog = await fetchProcessingMaterialCatalog();
+      const seedsWithTemplate = withCatalogRmpFormTemplate(processingSeeds, catalog);
+      for (const seed of seedsWithTemplate) {
+        try {
+          const schema = await fetchQcProcessingMaterialSchema({
+            subDepartmentId: effectiveSubDepartmentId,
+            seed,
+            catalog,
+          });
+          if (schema) {
+            const entry = buildProcessingMaterialEntry(seed);
+            entries.push(entry);
+            if (entry.schemaCacheKey) {
+              schemasByKey[entry.schemaCacheKey] = schema;
+            }
+            entryValues[entry.entryId] = {
+              schemaValues: hydrateProcessingMaterialValuesFromSeed(schema, seed),
+            };
+          } else {
+            const entry = buildProcessingMaterialEntry(seed, { schemaUnavailable: true });
+            entries.push(entry);
+            entryValues[entry.entryId] = { schemaValues: {} };
+          }
+        } catch {
+          // Schema fetch failure should not drop the material entry for display.
+          try {
+            const entry = buildProcessingMaterialEntry(seed, { schemaUnavailable: true });
+            entries.push(entry);
+            entryValues[entry.entryId] = { schemaValues: {} };
+          } catch {
+            // ignore malformed seed
+          }
+        }
+      }
+      continue;
+    }
+
+    const sections: SchemaSectionSubmission[] = expandDivisionDetailSections(
+      detailData && typeof detailData === "object" ? (detailData as Record<string, unknown>) : null,
+    );
+
+    const makeEntry = (
+      entryKind: QcDivisionEntry["kind"],
+      entrySubType: QcApiSubType,
+      entrySections: SchemaSectionSubmission[],
+      premixNo?: number,
+      motorId?: string,
+      inhibitorType?: string,
+    ) => {
+      const entryId = createDivisionEntryId();
+      const label = buildDivisionEntryLabel({
+        flowKey: getEntryKind(division, entrySubType).flowKey,
+        kind: entryKind,
+        rawMaterialType: rawMaterialTypeForLabel(division, detailSubType),
+        processingType: processingTypeForLabel(division, entrySubType),
+        premixNo,
+        subType: entrySubType,
+        motorId,
+      });
+      const entry: QcDivisionEntry = {
+        entryId,
+        flowKey: getEntryKind(division, entrySubType).flowKey,
+        kind: entryKind,
+        // Persist canonical API name (legacy PROPELLANT_PROPERTIES → QC).
+        apiDivision:
+          division === "PROPELLANT_PROPERTIES" ? "QC" : (division as QcApiDivision),
+        subType: entrySubType,
+        label,
+        savedSections: entrySections,
+        ...(premixNo != null && { premixNo }),
+        ...(motorId && { motorId }),
+        ...(inhibitorType && { inhibitorType }),
+      };
+      entries.push(entry);
+      return { entryId, entrySections };
+    };
+
+    const isRevalidationDivision =
+      division === "RAW_MATERIAL_REVALIDATION" ||
+      (division === "RAW_MATERIAL" && detailSubType === "RAW_MATERIAL_REVALIDATION");
+
+    if (isRevalidationDivision && !sections.length) {
+      const revalidationValues = mapDivisionDetailsToRevalidationValues(detailData);
+      if (revalidationValues) {
+        const { entryId } = makeEntry(
+          "REVALIDATION",
+          detailSubType ?? "RAW_MATERIAL_REVALIDATION",
+          [],
+        );
+        entryValues[entryId] = { schemaValues: revalidationValues };
+        continue;
+      }
+    }
+
+    if (division === "MIXING") {
+      // QC details split Mixing into PREMIX + FINAL_MIX divisionDetails — hydrate once from merged data.
+      if (!mixingDomainHydrated) {
+        const mergedMixingData =
+          resolveMixingQcFormData(detailsData) ??
+          (detailData && typeof detailData === "object"
+            ? (detailData as Record<string, unknown>)
+            : null);
+        const hydratedMixing = mergedMixingData
+          ? hydrateMixingDivisionFromFormData(mergedMixingData)
+          : null;
+        if (hydratedMixing) {
+          mixingDomainHydrated = true;
+          hydratedMixing.premixEntries.forEach(({ premixNo, values }) => {
+            const { entryId } = makeEntry("MIXING_PREMIX", "PREMIX", [], premixNo);
+            entryValues[entryId] = { schemaValues: values };
+          });
+          hydratedMixing.finalMixEntries.forEach(({ premixNo, values }) => {
+            const { entryId } = makeEntry("MIXING_FINAL_MIX", "FINAL_MIX", [], premixNo);
+            entryValues[entryId] = { schemaValues: values };
+          });
+          if (hydratedMixing.finalMixDetailsValues && !domainMixingFinalMixDetailsValues) {
+            domainMixingFinalMixDetailsValues = hydratedMixing.finalMixDetailsValues;
+          }
+          continue;
+        }
+      } else {
+        continue;
+      }
+
+      const grouped = groupMixingDetailSections(sections, detailSubType);
+
+      grouped.premixEntries.forEach(({ premixNo, sections: preSections }) => {
+        const { entryId } = makeEntry("MIXING_PREMIX", "PREMIX", preSections, premixNo);
+        entryValues[entryId] = {
+          schemaValues: hydrateMixingDetailsValuesFromSections(preSections, "premix"),
+        };
+      });
+
+      grouped.finalMixEntries.forEach(({ premixNo, sections: visSections }) => {
+        const { entryId } = makeEntry("MIXING_FINAL_MIX", "FINAL_MIX", visSections, premixNo);
+        entryValues[entryId] = {
+          schemaValues: hydrateViscosityValuesFromSections(visSections),
+        };
+      });
+
+      if (grouped.finalMixDetailSections.length) {
+        mixingFinalMixDetailSections.push(...grouped.finalMixDetailSections);
+      }
+      continue;
+    }
+
+    if (division === "HARDWARE") {
+      const dataRec = asRecord(detailData) ?? {};
+      const motors = listHardwareMotorsFromDetailData(dataRec);
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId || !isHardwareNestedMotorDetail(rec)) continue;
+
+        for (const process of QC_HARDWARE_PROCESS_OPTIONS) {
+          enqueueSchema(division, process.value);
+          const { entryId } = makeEntry(
+            "HARDWARE_PROCESS",
+            process.value,
+            [],
+            undefined,
+            motorId,
+          );
+          entryValues[entryId] = {
+            schemaValues: buildHardwareProcessValuesFromPayload(dataRec, motorId, process.value),
+          };
+        }
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    if (division === "CASTING") {
+      const dataRec = asRecord(detailData) ?? {};
+      const motors = [...asArray(dataRec.motorDetails), ...asArray(dataRec.motors)];
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId || !isCastingNestedMotorDetail(rec)) continue;
+
+        enqueueSchema(division, detailSubType);
+        const { entryId } = makeEntry("CASTING_MOTOR", detailSubType, [], undefined, motorId);
+        entryValues[entryId] = {
+          schemaValues: buildCastingValuesFromPayload(dataRec, motorId),
+        };
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    if (division === "TRIMMING") {
+      const dataRec = asRecord(detailData) ?? {};
+      const motors = [...asArray(dataRec.trimmingDetails), ...asArray(dataRec.motors)];
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId || !isTrimmingNestedMotorDetail(rec)) continue;
+
+        const { entryId } = makeEntry(
+          "TRIMMING_MOTOR",
+          detailSubType,
+          trimmingMotorDetailToSections(rec, motorId),
+          undefined,
+          motorId,
+        );
+        entryValues[entryId] = { schemaValues: hydrateTrimmingValuesFromMotorDetail(rec) };
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    if (division === "POST_CURE" || division === "POST_CURE_OPERATION") {
+      const dataRec = asRecord(detailData) ?? {};
+      const motors = [
+        ...asArray(dataRec.postCureMotorDetails),
+        ...asArray(dataRec.motors),
+        ...asArray(dataRec.motorDetails),
+      ];
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId) continue;
+
+        const selection =
+          resolvePostCureSelectionFromMotorDetails(dataRec, motorId) ??
+          resolvePostCureSelectionFromMotorDetails(detailsRecord, motorId) ??
+          resolvePostCureSelectionFromMotorDetails(rec, motorId);
+        const entrySubType = (selection?.subType ?? detailSubType) as QcApiSubType;
+        const entryInhibitor = selection?.inhibitorType;
+        const nestedValues = hydratePostCureValuesFromMotorDetail(
+          rec,
+          entrySubType,
+          entryInhibitor,
+        );
+        const schemaValues = postCureFormValuesHaveUserData(nestedValues)
+          ? nestedValues
+          : buildInitialPostCureValuesForMotor(
+              dataRec,
+              motorId,
+              entrySubType,
+              entryInhibitor,
+            );
+        const savedSections = postCureMotorDetailToSections(rec, motorId);
+        const { entryId } = makeEntry(
+          "POST_CURE_MOTOR",
+          entrySubType,
+          savedSections,
+          undefined,
+          motorId,
+          entryInhibitor,
+        );
+        entryValues[entryId] = { schemaValues };
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    if (division === "STATIC_TEST_FACILITY") {
+      const dataRec = asRecord(detailData) ?? {};
+      const motors = [...asArray(dataRec.motors), ...asArray(dataRec.motorDetails)];
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId) continue;
+        const subTypeRaw = String(rec.subType ?? rec.sub_type ?? detailSubType ?? "")
+          .trim()
+          .toUpperCase();
+        const entrySubType = (
+          subTypeRaw === "MAIN_MOTOR" ? "MAIN_MOTOR" : subTypeRaw === "BEM" ? "BEM" : null
+        ) as QcApiSubType;
+        const { entryId } = makeEntry("STF", entrySubType, [], undefined, motorId);
+        entryValues[entryId] = {
+          schemaValues: buildInitialStfValuesForMotor({ data: dataRec, motors }, motorId),
+        };
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    if (division === "WEIGHTMENT") {
+      const dataRec = asRecord(detailData) ?? {};
+      const scale = asRecord(dataRec.weighscaleDetails);
+      const motors = [
+        ...asArray(dataRec.motorWeightDetails),
+        ...asArray(dataRec.motors),
+        ...asArray(dataRec.motorDetails),
+      ];
+      let createdFromNested = false;
+
+      for (const motor of motors) {
+        const rec = asRecord(motor);
+        const motorId = pickMotorIdFromUnknown(rec);
+        if (!rec || !motorId || !Array.isArray(rec.weights)) continue;
+        const withScale = scale ? { ...rec, weighscaleDetails: scale } : rec;
+        const { entryId } = makeEntry(
+          "WEIGHTMENT_MOTOR",
+          detailSubType,
+          weighmentMotorDetailToSections(withScale, motorId),
+          undefined,
+          motorId,
+        );
+        entryValues[entryId] = { schemaValues: hydrateWeighmentValuesFromRecord(withScale) };
+        createdFromNested = true;
+      }
+
+      if (createdFromNested) continue;
+    }
+
+    const sectionsByPremix = new Map<string, SchemaSectionSubmission[]>();
+    const sectionsByMotor = new Map<string, SchemaSectionSubmission[]>();
+    const simpleSections: SchemaSectionSubmission[] = [];
+
+    for (const section of sections) {
+      if (section.premixNo != null) {
+        const sectionSubType = (section.subType ?? detailSubType) as QcApiSubType;
+        enqueueSchema(division, sectionSubType);
+        const groupKey = `${section.premixNo}:${sectionSubType}`;
+        const list = sectionsByPremix.get(groupKey) ?? [];
+        list.push(section);
+        sectionsByPremix.set(groupKey, list);
+      } else if ((section as { motorId?: string }).motorId) {
+        let sectionSubType = (section.subType ?? detailSubType) as QcApiSubType;
+        if (
+          division === "HARDWARE" &&
+          String(section.sectionId ?? "").trim() === QC_HARDWARE_ATTACHMENTS_SECTION_ID
+        ) {
+          sectionSubType = "ABRADING";
+        }
+        const sectionInhibitorType = resolveQcSectionInhibitorType(
+          division,
+          sectionSubType,
+          (section as { inhibitorType?: string }).inhibitorType,
+        );
+        enqueueSchema(division, sectionSubType, sectionInhibitorType);
+        const motorId = String((section as { motorId?: string }).motorId);
+        const groupKey = buildMotorDivisionGroupKey(motorId, sectionSubType, {
+          division,
+          inhibitorType: sectionInhibitorType,
+        });
+        const list = sectionsByMotor.get(groupKey) ?? [];
+        list.push(section);
+        sectionsByMotor.set(groupKey, list);
+      } else {
+        if (
+          division !== "RAW_MATERIAL_REVALIDATION" &&
+          !(division === "RAW_MATERIAL" && detailSubType === "RAW_MATERIAL_REVALIDATION")
+        ) {
+          enqueueSchema(division, detailSubType);
+        }
+        simpleSections.push(section);
+      }
+    }
+
+    if (sectionsByPremix.size > 0) {
+      for (const [groupKey, preSections] of sectionsByPremix) {
+        const colonIdx = groupKey.lastIndexOf(":");
+        const premixNo = parseInt(groupKey.slice(0, colonIdx), 10);
+        const sectionSubType = groupKey.slice(colonIdx + 1) as QcApiSubType;
+        const { kind } = getEntryKind(division, sectionSubType);
+        const { entryId } = makeEntry(kind, sectionSubType, preSections, premixNo);
+        entryValues[entryId] = { schemaValues: {} };
+      }
+    } else if (sectionsByMotor.size > 0) {
+      for (const [groupKey, motSections] of sectionsByMotor) {
+        const parsed = parseMotorDivisionGroupKey(groupKey);
+        const { kind } = getEntryKind(division, parsed.subType);
+        const { entryId } = makeEntry(
+          kind,
+          parsed.subType,
+          motSections,
+          undefined,
+          parsed.motorId,
+          parsed.inhibitorType,
+        );
+        entryValues[entryId] = { schemaValues: {} };
+      }
+    } else if (simpleSections.length > 0) {
+      const { kind } = getEntryKind(division, detailSubType);
+      const { entryId } = makeEntry(kind, detailSubType, simpleSections);
+      entryValues[entryId] = {
+        schemaValues:
+          kind === "REVALIDATION"
+            ? hydrateRevalidationValuesFromSections(simpleSections)
+            : {},
+      };
+    }
+    } catch (error) {
+      console.error("Failed to hydrate QC division detail", detail?.division, error);
+    }
+  }
+
+  const schemaRequests = Array.from(schemaFetchQueue.values());
+  for (const request of schemaRequests) {
+    const cacheKey = getQcSchemaCacheKey(request.division, request.subType, request.inhibitorType);
+    const cached = getCachedQcSchema(cacheKey);
+    if (cached) {
+      schemasByKey[cacheKey] = cached;
+    }
+  }
+
+  const pendingSchemaRequests = schemaRequests.filter((request) => {
+    const cacheKey = getQcSchemaCacheKey(request.division, request.subType, request.inhibitorType);
+    return !schemasByKey[cacheKey];
+  });
+
+  await mapWithConcurrency(pendingSchemaRequests, 4, async (request) => {
+    const cacheKey = getQcSchemaCacheKey(request.division, request.subType, request.inhibitorType);
+    try {
+      const schema = await fetchQcSchemaWithInflightDedup(cacheKey, async () => {
+        const response = await fetchQcSchema({
+          subDepartmentId: effectiveSubDepartmentId,
+          division: request.division,
+          subType: request.subType,
+          inhibitorType: request.inhibitorType,
+        });
+        return response?.success ? response.data ?? null : null;
+      });
+      if (schema) {
+        schemasByKey[cacheKey] = schema;
+      }
+    } catch {
+      // individual schema fetch failure should not abort hydration
+    }
+  });
+
+  for (const entry of entries) {
+    try {
+    if (entry.kind === "REVALIDATION") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter(
+          (s) => s.sectionId === "RAW_MATERIAL_DETAILS",
+        );
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateRevalidationValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialRevalidationSchemaValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "MIXING_PREMIX" || entry.kind === "MIXING_FINAL_MIX") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.kind === "MIXING_PREMIX" && s.sectionId !== QC_MIXING_PREMIX_SECTION_ID) return false;
+          if (entry.kind === "MIXING_FINAL_MIX" && s.sectionId !== QC_MIXING_VISCOSITY_SECTION_ID) {
+            return false;
+          }
+          if (entry.premixNo != null && s.premixNo !== entry.premixNo) return false;
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues:
+            entry.kind === "MIXING_FINAL_MIX"
+              ? hydrateViscosityValuesFromSections(sectionsToHydrate)
+              : hydrateMixingDetailsValuesFromSections(sectionsToHydrate, "premix"),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues:
+            entry.kind === "MIXING_FINAL_MIX"
+              ? createInitialViscosityValues()
+              : createInitialPremixDetailsValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "HARDWARE_PROCESS") {
+      const subType = String(entry.subType ?? "");
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          const expectedSectionId = getHardwareSectionIdForSubType(subType);
+          if (expectedSectionId && s.sectionId !== expectedSectionId) {
+            if (
+              subType === "ABRADING" &&
+              String(s.sectionId ?? "").trim() === QC_HARDWARE_ATTACHMENTS_SECTION_ID
+            ) {
+              return true;
+            }
+            return false;
+          }
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          const sectionSubType = String((s as { subType?: string }).subType ?? "")
+            .trim()
+            .toUpperCase();
+          return !sectionSubType || sectionSubType === subType.toUpperCase();
+        });
+
+      if (sectionsToHydrate.length > 0 && isQcHardwareProcessSubType(subType)) {
+        let schemaValues = hydrateHardwareProcessValuesFromSections(sectionsToHydrate, subType);
+        if (subType === "ABRADING") {
+          const motorSections =
+            entry.savedSections ??
+            (resolvedData.savedSections ?? []).filter((s) => {
+              const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+              return !sectionMotorId || sectionMotorId === entry.motorId;
+            });
+          schemaValues = mergeHardwareUploadValuesIntoEntryValues(
+            schemaValues,
+            hydrateHardwareUploadValuesFromSections([...sectionsToHydrate, ...motorSections]),
+          );
+        }
+        entryValues[entry.entryId] = { schemaValues };
+      } else if (
+        isQcHardwareProcessSubType(subType) &&
+        (!entryValues[entry.entryId]?.schemaValues ||
+          Object.keys(entryValues[entry.entryId].schemaValues).length === 0)
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialHardwareProcessValues(subType),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "CASTING_MOTOR") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateCastingValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialCastingValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "CURING_MOTOR") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateCuringValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        const curingSubType = normalizeQcCuringType(entry.subType) || "NORMAL";
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialCuringValues(curingSubType),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "DE_CORING_MOTOR") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateDeCoringValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialDeCoringValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "POST_CURE_MOTOR") {
+      if (postCureFormValuesHaveUserData(entryValues[entry.entryId]?.schemaValues)) {
+        continue;
+      }
+      if (entry.motorId) {
+        const nestedValues =
+          buildInitialPostCureValuesForMotor(
+            detailsRecord,
+            entry.motorId,
+            entry.subType,
+            entry.inhibitorType,
+          );
+        if (postCureFormValuesHaveUserData(nestedValues)) {
+          entryValues[entry.entryId] = { schemaValues: nestedValues };
+          continue;
+        }
+      }
+
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          if (
+            entry.subType &&
+            (s as { subType?: string }).subType &&
+            (s as { subType?: string }).subType !== entry.subType
+          ) {
+            return false;
+          }
+          if (
+            entry.inhibitorType &&
+            (s as { inhibitorType?: string }).inhibitorType &&
+            (s as { inhibitorType?: string }).inhibitorType !== entry.inhibitorType
+          ) {
+            return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydratePostCureValuesFromSections(
+            sectionsToHydrate,
+            entry.subType,
+            entry.inhibitorType,
+          ),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialPostCureValues(entry.subType, entry.inhibitorType),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "NDT_MOTOR") {
+      if (entry.motorId) {
+        const nestedValues = buildInitialNdtValuesForMotor(
+          detailsData as unknown as Record<string, unknown>,
+          entry.motorId,
+        );
+        if (ndtFormValuesHaveUserData(nestedValues)) {
+          entryValues[entry.entryId] = { schemaValues: nestedValues };
+          continue;
+        }
+      }
+
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateNdtValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialNdtValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "STF") {
+      // First pass already hydrated from division data; do not overwrite with empty shells.
+      if (stfFormValuesHaveUserData(entryValues[entry.entryId]?.schemaValues)) {
+        continue;
+      }
+      if (entry.motorId) {
+        const nestedValues = buildInitialStfValuesForMotor(detailsRecord, entry.motorId);
+        if (stfFormValuesHaveUserData(nestedValues)) {
+          entryValues[entry.entryId] = { schemaValues: nestedValues };
+          continue;
+        }
+      }
+      if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialStfValues(
+            String(entry.subType ?? "").toUpperCase() === "MAIN_MOTOR" ? "MAIN_MOTOR" : "BEM",
+          ),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "WEIGHTMENT_MOTOR") {
+      if (weighmentFormValuesHaveUserData(entryValues[entry.entryId]?.schemaValues)) {
+        continue;
+      }
+      if (entry.motorId) {
+        const nestedValues = buildInitialWeighmentValuesForMotor(detailsRecord, entry.motorId);
+        if (weighmentFormValuesHaveUserData(nestedValues)) {
+          entryValues[entry.entryId] = { schemaValues: nestedValues };
+          continue;
+        }
+      }
+
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydrateWeighmentValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialWeighmentValues(),
+        };
+      }
+      continue;
+    }
+
+    if (entry.kind === "PROPELLANT_MOTOR" || entry.kind === "PROPELLANT_PROCESS") {
+      const sectionsToHydrate =
+        entry.savedSections ??
+        (resolvedData.savedSections ?? []).filter((s) => {
+          if (entry.motorId != null) {
+            const sectionMotorId = String((s as { motorId?: string }).motorId ?? "").trim();
+            if (sectionMotorId && sectionMotorId !== entry.motorId) return false;
+          }
+          return true;
+        });
+      if (sectionsToHydrate.length > 0) {
+        entryValues[entry.entryId] = {
+          schemaValues: hydratePropellantValuesFromSections(sectionsToHydrate),
+        };
+      } else if (
+        !entryValues[entry.entryId]?.schemaValues ||
+        Object.keys(entryValues[entry.entryId].schemaValues).length === 0
+      ) {
+        entryValues[entry.entryId] = {
+          schemaValues: createInitialPropellantValues(),
+        };
+      }
+      continue;
+    }
+
+    const cacheKey = getQcSchemaCacheKey(entry.apiDivision, entry.subType, entry.inhibitorType);
+    const schema = schemasByKey[cacheKey];
+    if (!schema) continue;
+
+    const sectionsToHydrate =
+      entry.savedSections ??
+      (resolvedData.savedSections ?? []).filter((s) => {
+        if (entry.kind === "REVALIDATION" && s.sectionId !== "RAW_MATERIAL_DETAILS") return false;
+        if (entry.kind === "HARDWARE_PROCESS" && entry.subType) {
+          const expectedSectionId = getHardwareSectionIdForSubType(String(entry.subType));
+          if (expectedSectionId && s.sectionId !== expectedSectionId) return false;
+        }
+        if (entry.premixNo != null) {
+          if (s.premixNo !== entry.premixNo) return false;
+          if (entry.subType && (s as { subType?: string }).subType && (s as { subType?: string }).subType !== entry.subType) {
+            return false;
+          }
+          return true;
+        }
+        if (entry.motorId != null) {
+          if ((s as { motorId?: string }).motorId !== entry.motorId) return false;
+          if (
+            entry.subType &&
+            (s as { subType?: string }).subType &&
+            (s as { subType?: string }).subType !== entry.subType
+          ) {
+            return false;
+          }
+          if (
+            entry.inhibitorType &&
+            (s as { inhibitorType?: string }).inhibitorType &&
+            (s as { inhibitorType?: string }).inhibitorType !== entry.inhibitorType
+          ) {
+            return false;
+          }
+          return true;
+        }
+        return s.premixNo == null && !(s as { motorId?: string }).motorId;
+      });
+
+    if (sectionsToHydrate.length > 0) {
+      entryValues[entry.entryId] = {
+        schemaValues: hydrateQcValuesFromSections(schema, sectionsToHydrate),
+      };
+    }
+    } catch (error) {
+      console.error("Failed to hydrate QC division entry", entry.kind, entry.entryId, error);
+      if (!entryValues[entry.entryId]) {
+        entryValues[entry.entryId] = { schemaValues: {} };
+      }
+    }
+  }
+
+  const mixingFinalMixDetailsValues =
+    domainMixingFinalMixDetailsValues ??
+    (mixingFinalMixDetailSections.length > 0
+      ? hydrateMixingDetailsValuesFromSections(mixingFinalMixDetailSections, "finalMix")
+      : undefined);
+
+  let entryValuesWithHardwareUploads = entryValues;
+  try {
+    entryValuesWithHardwareUploads = applyHardwareSharedUploadsToEntryValues(
+      entries,
+      entryValues,
+      resolvedData.savedSections,
+    );
+  } catch (error) {
+    console.error("Failed to apply hardware shared uploads", error);
+  }
+
+  return {
+    ...resolvedData,
+    divisionEntries: entries,
+    divisionEntryValues: entryValuesWithHardwareUploads,
+    schemasByKey,
+    savedSections:
+      mixingFinalMixDetailSections.length > 0
+        ? mixingFinalMixDetailSections
+        : resolvedData.savedSections,
+    ...(mixingFinalMixDetailsValues && { mixingFinalMixDetailsValues }),
+    ...(processingWeightmentSheet && { processingWeightmentSheet }),
+  };
+}
+
+export async function hydrateQcDivisionFormFromDetailsResponse(
+  detailsData: QCDivisionDetailsModel | null | undefined,
+  subDepartmentId: number,
+): Promise<QualityControlFormState> {
+  if (!detailsData) return createDefaultQualityControlFormState();
+  return hydrateQcDivisionFormFromDetails(detailsData, subDepartmentId);
+}
+
+export async function loadQcDivisionDetailsViewState(
+  detailsData: QCDivisionDetailsModel,
+  subDepartmentId: number,
+): Promise<{
+  formData: QualityControlFormState;
+  detailView: QCDivisionDetailView | null;
+}> {
+  const formData = await hydrateQcDivisionFormFromDetails(detailsData, subDepartmentId);
+  const detailView = mapQCDivisionDetailsForDisplay(QCDivisionDetailsModel.toPlainRecord(detailsData));
+  return { formData, detailView };
+}

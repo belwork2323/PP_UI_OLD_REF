@@ -1,0 +1,327 @@
+import type { FinalMixEntry, PremixEntry } from "@/data/models/user/MixingFormModel";
+import type { SubDeptValidationConfig } from "../runValidation";
+import type { ValidationTier } from "../submissionIntent";
+import { VALIDATIONSTRING } from "./validationString";
+
+const M = VALIDATIONSTRING;
+
+export const mixingFieldRules = {
+  mixerType: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  bldgNo: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  premixDate: {
+    valueType: "date" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  premixQuantity: {
+    valueType: "number" as const,
+    pattern: M.PATTERNS.FLOAT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  mixingCycleCode: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  bowlId: {
+    valueType: "text" as const,
+    pattern: M.PATTERNS.BOWL_ID,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  bowlTrialDate: {
+    valueType: "datetime" as const,
+    pattern: undefined,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  bowlTrialObservations: {
+    valueType: "text" as const,
+    pattern: M.PATTERNS.ALPHABET_WITH_SPECIAL,
+    minLength: 1,
+    maxLength: M.LENGTH.MAX_LONG_TEXT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  // process particulars
+  operation: {
+    valueType: "text" as const,
+    pattern: undefined,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  rpm: {
+    valueType: "number" as const,
+    pattern: M.PATTERNS.FLOAT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  time: {
+    valueType: "number" as const,
+    pattern: M.PATTERNS.FLOAT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  temp: {
+    valueType: "number" as const,
+    pattern: M.PATTERNS.FLOAT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  vacuum: {
+    valueType: "number" as const,
+    pattern: M.PATTERNS.FLOAT,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  qualityChecks: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+  observedValue: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: M.FIELD_REQUIRED, invalid: M.INVALID },
+  },
+};
+
+type MixingData = {
+  premixes?: PremixEntry[];
+  finalMixes?: FinalMixEntry[];
+};
+
+function resolveFieldPaths(data: MixingData) {
+  const paths: Array<{ path: string; value: unknown; ruleKey: string }> = [];
+
+  (data.premixes ?? []).forEach((p, i) => {
+    paths.push({ path: `premixes.${i}.mixerType`, value: p.mixerType, ruleKey: "mixerType" });
+    paths.push({ path: `premixes.${i}.bldgNo`, value: p.bldgNo, ruleKey: "bldgNo" });
+    paths.push({ path: `premixes.${i}.premixDate`, value: p.premixDate, ruleKey: "premixDate" });
+    paths.push({
+      path: `premixes.${i}.premixQuantity`,
+      value: p.premixQuantity,
+      ruleKey: "premixQuantity",
+    });
+    paths.push({
+      path: `premixes.${i}.mixingCycleCode`,
+      value: p.mixingCycleCode,
+      ruleKey: "mixingCycleCode",
+    });
+    paths.push({ path: `premixes.${i}.bowlId`, value: p.bowlId, ruleKey: "bowlId" });
+    paths.push({
+      path: `premixes.${i}.bowlTrialDate`,
+      value: p.bowlTrialDate,
+      ruleKey: "bowlTrialDate",
+    });
+    paths.push({
+      path: `premixes.${i}.bowlTrialObservations`,
+      value: p.bowlTrialObservations,
+      ruleKey: "bowlTrialObservations",
+    });
+
+    (p.processParticulars ?? []).forEach((row, r) => {
+      paths.push({
+        path: `premixes.${i}.processParticulars.${r}.operation`,
+        value: row.operationId,
+        ruleKey: "operation",
+      });
+      paths.push({
+        path: `premixes.${i}.processParticulars.${r}.rpm`,
+        value: row.rpm,
+        ruleKey: "rpm",
+      });
+      paths.push({
+        path: `premixes.${i}.processParticulars.${r}.time`,
+        value: row.time,
+        ruleKey: "time",
+      });
+      paths.push({
+        path: `premixes.${i}.processParticulars.${r}.temp`,
+        value: row.temp,
+        ruleKey: "temp",
+      });
+      paths.push({
+        path: `premixes.${i}.processParticulars.${r}.vacuum`,
+        value: row.vacuum,
+        ruleKey: "vacuum",
+      });
+    });
+
+    (p.qualityChecks ?? []).forEach((qc, q) => {
+      (qc.observedValues ?? []).forEach((ov, o) => {
+        paths.push({
+          path: `premixes.${i}.qualityChecks.${q}.observedValues.${o}`,
+          value: ov,
+          ruleKey: "observedValue",
+        });
+      });
+    });
+  });
+
+  (data.finalMixes ?? []).forEach((p, i) => {
+    paths.push({ path: `finalMixes.${i}.mixerType`, value: p.mixerType, ruleKey: "mixerType" });
+    paths.push({ path: `finalMixes.${i}.bldgNo`, value: p.bldgNo, ruleKey: "bldgNo" });
+    paths.push({
+      path: `finalMixes.${i}.mixingCycleCode`,
+      value: p.mixingCycleCode,
+      ruleKey: "mixingCycleCode",
+    });
+    paths.push({ path: `finalMixes.${i}.bowlId`, value: p.bowlId, ruleKey: "bowlId" });
+
+    (p.processParticulars ?? []).forEach((row, r) => {
+      paths.push({
+        path: `finalMixes.${i}.processParticulars.${r}.operation`,
+        value: row.operationId,
+        ruleKey: "operation",
+      });
+      paths.push({
+        path: `finalMixes.${i}.processParticulars.${r}.rpm`,
+        value: row.rpm,
+        ruleKey: "rpm",
+      });
+      paths.push({
+        path: `finalMixes.${i}.processParticulars.${r}.time`,
+        value: row.time,
+        ruleKey: "time",
+      });
+      paths.push({
+        path: `finalMixes.${i}.processParticulars.${r}.temp`,
+        value: row.temp,
+        ruleKey: "temp",
+      });
+      paths.push({
+        path: `finalMixes.${i}.processParticulars.${r}.vacuum`,
+        value: row.vacuum,
+        ruleKey: "vacuum",
+      });
+    });
+
+    (p.qualityChecks ?? []).forEach((qc, q) => {
+      (qc.observedValues ?? []).forEach((ov, o) => {
+        paths.push({
+          path: `finalMixes.${i}.qualityChecks.${q}.observedValues.${o}`,
+          value: ov,
+          ruleKey: "observedValue",
+        });
+      });
+    });
+  });
+
+  return paths;
+}
+
+export const mixingValidationConfig: SubDeptValidationConfig<MixingData> = {
+  id: "mixing",
+  fields: mixingFieldRules as any,
+  resolveFieldPaths,
+  customRules: [
+    (data: MixingData, tier: string, errors: Record<string, string>) => {
+      const isSubmit = tier === "SUBMIT";
+
+      const checkEmptySections = (
+        prefix: string,
+        processRows: unknown[] | undefined,
+        qRows: unknown[] | undefined,
+      ) => {
+        if (!isSubmit) return;
+        if (!processRows || !processRows.length) {
+          errors[`${prefix}.processParticulars.root`] =
+            mixingFieldRules.operation.messages.required;
+        }
+        if (!qRows || !qRows.length) {
+          errors[`${prefix}.qualityChecks.root`] =
+            mixingFieldRules.qualityChecks.messages.required;
+        }
+      };
+
+      const checkQualityRows = (prefix: string, qRows: any[] | undefined) => {
+        if (!qRows || !qRows.length) return;
+
+        qRows.forEach((row, qIdx) => {
+          const spec = row.specification;
+          let min: number | undefined;
+          let max: number | undefined;
+          if (spec && typeof spec === "object") {
+            const minVal = Number((spec as any).minValue);
+            const maxVal = Number((spec as any).maxValue);
+            if (
+              !Number.isNaN(minVal) &&
+              (spec as any).minValue !== null &&
+              (spec as any).minValue !== undefined
+            ) {
+              min = minVal;
+            }
+            if (
+              !Number.isNaN(maxVal) &&
+              (spec as any).maxValue !== null &&
+              (spec as any).maxValue !== undefined
+            ) {
+              max = maxVal;
+            }
+          }
+
+          const values = row.observedValues ?? [];
+          const sampleCount = Math.max(1, Number(row.noOfSamples) || values.length || 1);
+
+          for (let o = 0; o < sampleCount; o++) {
+            const val = values[o];
+            const path = `${prefix}.qualityChecks.${qIdx}.observedValues.${o}`;
+            if (isSubmit) {
+              if (val === undefined || val === null || String(val).trim() === "") {
+                errors[path] = mixingFieldRules.observedValue.messages.required;
+                continue;
+              }
+            } else {
+              // FORMAT/UNIT: skip empty
+              if (val === undefined || val === null || String(val).trim() === "") continue;
+            }
+
+            // Validate as number without mutating form state (mutation steals/breaks typing).
+            const num = Number(val);
+            if (Number.isNaN(num)) {
+              errors[path] = mixingFieldRules.observedValue.messages.invalid;
+              continue;
+            }
+
+            if (min !== undefined && max !== undefined) {
+              if (num < min || num > max) {
+                errors[path] = M.OBSERVED_VALUE_RANGE.replace("{min}", String(min)).replace(
+                  "{max}",
+                  String(max),
+                );
+              }
+            } else if (min !== undefined && num < min) {
+              errors[path] = M.OBSERVED_VALUE_MIN.replace("{min}", String(min));
+            } else if (max !== undefined && num > max) {
+              errors[path] = M.OBSERVED_VALUE_MAX.replace("{max}", String(max));
+            }
+          }
+        });
+      };
+
+      (data.premixes ?? []).forEach((p, i) => {
+        const prefix = `premixes.${i}`;
+        checkEmptySections(prefix, p.processParticulars, p.qualityChecks);
+        checkQualityRows(prefix, p.qualityChecks);
+      });
+
+      (data.finalMixes ?? []).forEach((p, i) => {
+        const prefix = `finalMixes.${i}`;
+        checkEmptySections(prefix, p.processParticulars, p.qualityChecks);
+        checkQualityRows(prefix, p.qualityChecks);
+      });
+    },
+  ],
+};
+
+export default mixingValidationConfig;

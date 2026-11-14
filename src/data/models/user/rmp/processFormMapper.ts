@@ -1,0 +1,1097 @@
+import { formatDateTimeForApi, toCamelCaseKey } from "../rawMaterialPreparationApiMapper";
+import type {
+  ApCoarseProcessDto,
+  ApFineProcessDto,
+  ApUltraFineProcessDto,
+  AluminumProcessDto,
+  DoaProcessDto,
+  DryingTrayOvenDto,
+  LotDetailDto,
+  PreparationProcessEntry,
+  SievingDto,
+} from "./rmpProcessTypes";
+import { processTypeToUiKey, uiKeyToProcessType } from "./rmpProcessTypes";
+import type {
+  DefaultLiquidProcessForm,
+  DefaultSolidProcessForm,
+  DryingTrayOvenForm,
+  LotDetailFormRow,
+  RmpMaterialProcessForm,
+  SievingForm,
+} from "./defaultSolidProcessForm";
+import {
+  createEmptyDryingTrayOvenForm,
+  createEmptyLotDetailRow,
+  createEmptyProcessFormForUiKey,
+  createEmptySievingForm,
+} from "./defaultSolidProcessForm";
+import type { RmpMaterialUiKey } from "./rmpMaterialUiRegistry";
+import { createSeededApCoarseProcessForm, type ApCoarseProcessForm } from "./apCoarseProcessForm";
+import { createSeededApFineProcessForm, type ApFineProcessForm } from "./apFineProcessForm";
+import {
+  createSeededApUltraFineProcessForm,
+  type ApUltraFineProcessForm,
+} from "./apUltraFineProcessForm";
+import { createEmptyAluminumProcessForm, type AluminumProcessForm } from "./aluminumProcessForm";
+import {
+  createEmptyDoaProcessForm,
+  type DoaProcessForm,
+  type LiquidDispatchUiKey,
+} from "./doaProcessForm";
+import { createEmptyCcProcessForm, type CcProcessForm, type CcIoUiKey } from "./ccProcessForm";
+import { createEmptyNonoxDProcessForm, type NonoxDProcessForm } from "./nonoxDProcessForm";
+
+const str = (v: unknown) => (v == null ? "" : String(v)).trim();
+
+const pickField = (row: Record<string, unknown>, ...candidates: string[]): string => {
+  for (const candidate of candidates) {
+    const camel = toCamelCaseKey(candidate);
+    const keys = [candidate, camel, candidate.toUpperCase(), candidate.toLowerCase()];
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== "") {
+        return String(row[key]).trim();
+      }
+    }
+  }
+  return "";
+};
+
+const normalizeSectionId = (sectionId: string): string =>
+  toCamelCaseKey(String(sectionId ?? "").trim());
+
+const firstSectionRow = (
+  sections: PreparationProcessEntry["sections"] | undefined,
+  sectionId: string,
+): Record<string, unknown> => {
+  const target = normalizeSectionId(sectionId);
+  const section = (sections ?? []).find(
+    (entry) => normalizeSectionId(String(entry.sectionId ?? "")) === target,
+  );
+  const data = section?.sectionData;
+  if (!Array.isArray(data) || data.length === 0) return {};
+  const row = data[0];
+  if (row && typeof row === "object" && !Array.isArray(row)) {
+    return row as Record<string, unknown>;
+  }
+  return {};
+};
+
+const sectionRows = (
+  sections: PreparationProcessEntry["sections"] | undefined,
+  sectionId: string,
+): Record<string, unknown>[] => {
+  const target = normalizeSectionId(sectionId);
+  const section = (sections ?? []).find(
+    (entry) => normalizeSectionId(String(entry.sectionId ?? "")) === target,
+  );
+  const data = section?.sectionData;
+  if (!Array.isArray(data)) return [];
+  return data.filter(
+    (row): row is Record<string, unknown> =>
+      Boolean(row) && typeof row === "object" && !Array.isArray(row),
+  );
+};
+
+const toLotFormRows = (lots: LotDetailDto[] | undefined): LotDetailFormRow[] => {
+  const unwrapQuantity = (value: unknown): string => {
+    if (value == null) return "";
+    if (typeof value === "object" && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      if (obj.parsedValue !== undefined && obj.parsedValue !== null && obj.parsedValue !== "") {
+        const n = Number(obj.parsedValue);
+        return Number.isFinite(n) ? String(n) : String(obj.parsedValue);
+      }
+      if (obj.source !== undefined && obj.source !== null && obj.source !== "") {
+        const n = Number(obj.source);
+        return Number.isFinite(n) ? String(n) : String(obj.source);
+      }
+    }
+    const n = Number(value);
+    return Number.isFinite(n) && !Number.isNaN(n) ? String(n) : "";
+  };
+
+  const rows = (lots ?? [])
+    .map((lot) => ({
+      lotId: str(lot?.lotId),
+      quantity: unwrapQuantity(lot?.quantity as unknown),
+    }))
+    .filter((row) => row.lotId || row.quantity);
+  return rows.length > 0 ? rows : [createEmptyLotDetailRow()];
+};
+
+const toLotDtos = (rows: LotDetailFormRow[] | undefined): LotDetailDto[] =>
+  (rows ?? [])
+    .map((row) => {
+      const lotId = str(row.lotId);
+      const qtyText = str(row.quantity).replace(/,/g, "");
+      const quantity = qtyText ? Number(qtyText) : null;
+      return { lotId, quantity: Number.isFinite(quantity as number) ? quantity : null };
+    })
+    .filter((row) => row.lotId || row.quantity != null);
+
+const dryingFormFromDto = (dto: DryingTrayOvenDto | null | undefined): DryingTrayOvenForm => ({
+  ...createEmptyDryingTrayOvenForm(),
+  ovenType: str(dto?.ovenType),
+  ovenNumber: str(dto?.ovenNumber),
+  ovenSetTemperature: str(dto?.ovenSetTemperature),
+  startDatetime: str(dto?.startDatetime),
+  endDatetime: str(dto?.endDatetime),
+  moisture: str(dto?.moisture),
+  observation: str(dto?.observation),
+  qaRemarks: str(dto?.qaRemarks),
+});
+
+const sievingFormFromDto = (dto: SievingDto | null | undefined): SievingForm => ({
+  ...createEmptySievingForm(),
+  sievingDispatchDatetime: str(dto?.sievingDispatchDatetime),
+  sievedQuantity: str(dto?.sievedQuantity),
+  sieveMeshSize: str(dto?.sieveMeshSize),
+  observation: str(dto?.observation),
+  qaRemarks: str(dto?.qaRemarks),
+});
+
+const dryingDtoFromForm = (drying: DryingTrayOvenForm): DryingTrayOvenDto | null => {
+  const start = formatDateTimeForApi(drying.startDatetime);
+  const end = formatDateTimeForApi(drying.endDatetime);
+  const dto: DryingTrayOvenDto = {
+    ovenType: drying.ovenType.trim() || null,
+    ovenNumber: drying.ovenNumber.trim() || null,
+    ovenSetTemperature: drying.ovenSetTemperature.trim() || null,
+    startDatetime: start || null,
+    endDatetime: end || null,
+    moisture: drying.moisture.trim() || null,
+    observation: drying.observation.trim() || null,
+    qaRemarks: drying.qaRemarks.trim() || null,
+  };
+  const hasValue = Object.values(dto).some((v) => v != null && String(v).trim() !== "");
+  return hasValue ? dto : null;
+};
+
+const sievingDtoFromForm = (sieving: SievingForm): SievingDto | null => {
+  const dispatch = formatDateTimeForApi(sieving.sievingDispatchDatetime);
+  const dto: SievingDto = {
+    sievingDispatchDatetime: dispatch || null,
+    sievedQuantity: sieving.sievedQuantity.trim() || null,
+    sieveMeshSize: sieving.sieveMeshSize.trim() || null,
+    observation: sieving.observation.trim() || null,
+    qaRemarks: sieving.qaRemarks.trim() || null,
+  };
+  const hasValue = Object.values(dto).some((v) => v != null && String(v).trim() !== "");
+  return hasValue ? dto : null;
+};
+
+const apCoarseDtoFromForm = (form: ApCoarseProcessForm): ApCoarseProcessDto => ({
+  equipmentType: str(form.equipmentType) || "RVD",
+  blendingDryingParameters: (form.blendingDryingParameters ?? []).map((row) => ({
+    operation: str(row?.operation) || null,
+    setParameter: str(row?.setParameter) || null,
+    actualParameter: str(row?.actualParameter) || null,
+  })),
+  blendingDryingQaRemarks: str(form.blendingDryingQaRemarks) || null,
+  dryingOperationRvd: (form.dryingOperationRvd ?? []).map((row) => ({
+    operation: str(row?.operation) || null,
+    setParameter: str(row?.setParameter) || null,
+    actualParameter: str(row?.actualParameter) || null,
+    startTime: str(row?.startTime) || null,
+    endTime: str(row?.endTime) || null,
+  })),
+  dryingOperationRvdQaRemarks: str(form.dryingOperationRvdQaRemarks) || null,
+  particleSizeDistribution: (form.particleSizeDistribution ?? []).map((row) => ({
+    psdRequirement: str(row?.psdRequirement) || null,
+    specification: str(row?.specification) || null,
+    result: str(row?.result) || null,
+  })),
+  particleSizeDistributionQaRemarks: str(form.particleSizeDistributionQaRemarks) || null,
+});
+
+const apCoarseFormFromDto = (
+  dto: ApCoarseProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): ApCoarseProcessForm => {
+  const seeded = createSeededApCoarseProcessForm();
+  if (!dto) {
+    return { ...seeded, lotDetails };
+  }
+  return {
+    uiKey: "apCoarse",
+    lotDetails,
+    lotDetailsQaRemarks: seeded.lotDetailsQaRemarks,
+    equipmentType: str(dto.equipmentType) || "RVD",
+    blendingDryingParameters: dto.blendingDryingParameters?.length
+      ? dto.blendingDryingParameters.map((row) => ({
+          operation: str(row?.operation),
+          setParameter: str(row?.setParameter),
+          actualParameter: str(row?.actualParameter),
+        }))
+      : seeded.blendingDryingParameters,
+    blendingDryingQaRemarks: str(dto.blendingDryingQaRemarks),
+    dryingOperationRvd: dto.dryingOperationRvd?.length
+      ? dto.dryingOperationRvd.map((row) => ({
+          operation: str(row?.operation),
+          setParameter: str(row?.setParameter),
+          actualParameter: str(row?.actualParameter),
+          startTime: str(row?.startTime),
+          endTime: str(row?.endTime),
+        }))
+      : seeded.dryingOperationRvd,
+    dryingOperationRvdQaRemarks: str(dto.dryingOperationRvdQaRemarks),
+    particleSizeDistribution: dto.particleSizeDistribution?.length
+      ? dto.particleSizeDistribution.map((row) => ({
+          psdRequirement: str(row?.psdRequirement),
+          specification: str(row?.specification),
+          result: str(row?.result),
+        }))
+      : seeded.particleSizeDistribution,
+    particleSizeDistributionQaRemarks: str(dto.particleSizeDistributionQaRemarks),
+  };
+};
+
+const apFineDtoFromForm = (form: ApFineProcessForm): ApFineProcessDto => ({
+  acmEquipmentId: form.acmEquipmentId.trim() || null,
+  millRpm: form.millRpm.trim() || null,
+  classifierRpm: form.classifierRpm.trim() || null,
+  screwFeederRpm: form.screwFeederRpm.trim() || null,
+  idFanRpm: form.idFanRpm.trim() || null,
+  setPressure: form.setPressure.trim() || null,
+  grindingStartDatetime: formatDateTimeForApi(form.grindingStartDatetime) || null,
+  grindingEndDatetime: formatDateTimeForApi(form.grindingEndDatetime) || null,
+  grindingObservation: form.grindingObservation.trim() || null,
+  grindingQaRemarks: form.grindingQaRemarks.trim() || null,
+  particleSizeDistribution: (form.particleSizeDistribution ?? []).map((row) => ({
+    psdRequirement: row.psdRequirement.trim() || null,
+    specification: row.specification.trim() || null,
+    result: row.result.trim() || null,
+  })),
+  qtyKgQualified: form.qtyKgQualified.trim() || null,
+  blendingDryingParameters: (form.blendingDryingParameters ?? []).map((row) => ({
+    operation: row.operation.trim() || null,
+    setParameter: row.setParameter.trim() || null,
+    actualParameter: row.actualParameter.trim() || null,
+  })),
+  blendingDryingQaRemarks: form.blendingDryingQaRemarks.trim() || null,
+  dryingOperationRvd: (form.dryingOperationRvd ?? []).map((row) => ({
+    operation: row.operation.trim() || null,
+    setParameter: row.setParameter.trim() || null,
+    actualParameter: row.actualParameter.trim() || null,
+    startTime: row.startTime.trim() || null,
+    endTime: row.endTime.trim() || null,
+  })),
+  dryingOperationRvdQaRemarks: form.dryingOperationRvdQaRemarks.trim() || null,
+  trayOvenStorage: dryingDtoFromForm(form.trayOvenStorage as DryingTrayOvenForm),
+  sieving: sievingDtoFromForm(form.sieving as SievingForm),
+});
+
+const apFineFormFromDto = (
+  dto: ApFineProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): ApFineProcessForm => {
+  const seeded = createSeededApFineProcessForm();
+  if (!dto) {
+    return { ...seeded, lotDetails };
+  }
+  return {
+    uiKey: "apFine",
+    lotDetails,
+    lotDetailsQaRemarks: seeded.lotDetailsQaRemarks,
+    acmEquipmentId: str(dto.acmEquipmentId),
+    millRpm: str(dto.millRpm),
+    classifierRpm: str(dto.classifierRpm),
+    screwFeederRpm: str(dto.screwFeederRpm),
+    idFanRpm: str(dto.idFanRpm),
+    setPressure: str(dto.setPressure),
+    grindingStartDatetime: str(dto.grindingStartDatetime),
+    grindingEndDatetime: str(dto.grindingEndDatetime),
+    grindingObservation: str(dto.grindingObservation),
+    grindingQaRemarks: str(dto.grindingQaRemarks),
+    particleSizeDistribution: dto.particleSizeDistribution?.length
+      ? dto.particleSizeDistribution.map((row) => ({
+          psdRequirement: str(row?.psdRequirement),
+          specification: str(row?.specification),
+          result: str(row?.result),
+        }))
+      : seeded.particleSizeDistribution,
+    qtyKgQualified: str(dto.qtyKgQualified),
+    blendingDryingParameters: dto.blendingDryingParameters?.length
+      ? dto.blendingDryingParameters.map((row) => ({
+          operation: str(row?.operation),
+          setParameter: str(row?.setParameter),
+          actualParameter: str(row?.actualParameter),
+        }))
+      : seeded.blendingDryingParameters,
+    blendingDryingQaRemarks: str(dto.blendingDryingQaRemarks),
+    dryingOperationRvd: dto.dryingOperationRvd?.length
+      ? dto.dryingOperationRvd.map((row) => ({
+          operation: str(row?.operation),
+          setParameter: str(row?.setParameter),
+          actualParameter: str(row?.actualParameter),
+          startTime: str(row?.startTime),
+          endTime: str(row?.endTime),
+        }))
+      : seeded.dryingOperationRvd,
+    dryingOperationRvdQaRemarks: str(dto.dryingOperationRvdQaRemarks),
+    trayOvenStorage: dryingFormFromDto(dto.trayOvenStorage) as ApFineProcessForm["trayOvenStorage"],
+    sieving: sievingFormFromDto(dto.sieving) as ApFineProcessForm["sieving"],
+  };
+};
+
+const apUltraFineDtoFromForm = (form: ApUltraFineProcessForm): ApUltraFineProcessDto => ({
+  equipmentId: form.equipmentId.trim() || null,
+  screwFeederRpm: form.screwFeederRpm.trim() || null,
+  feedPressure: form.feedPressure.trim() || null,
+  grindingPressure: form.grindingPressure.trim() || null,
+  grindingStartDatetime: formatDateTimeForApi(form.grindingStartDatetime) || null,
+  grindingEndDatetime: formatDateTimeForApi(form.grindingEndDatetime) || null,
+  grindingObservation: form.grindingObservation.trim() || null,
+  grindingQaRemarks: form.grindingQaRemarks.trim() || null,
+  particleSizeResult: form.particleSizeResult.trim() || null,
+  qtyKgQualified: form.qtyKgQualified.trim() || null,
+  drying: dryingDtoFromForm(form.drying as DryingTrayOvenForm),
+  sieving: sievingDtoFromForm(form.sieving as SievingForm),
+});
+
+const apUltraFineFormFromDto = (
+  dto: ApUltraFineProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): ApUltraFineProcessForm => {
+  const seeded = createSeededApUltraFineProcessForm();
+  if (!dto) {
+    return { ...seeded, lotDetails };
+  }
+  return {
+    uiKey: "apUltraFine",
+    lotDetails,
+    lotDetailsQaRemarks: seeded.lotDetailsQaRemarks,
+    equipmentId: str(dto.equipmentId),
+    screwFeederRpm: str(dto.screwFeederRpm),
+    feedPressure: str(dto.feedPressure),
+    grindingPressure: str(dto.grindingPressure),
+    grindingStartDatetime: str(dto.grindingStartDatetime),
+    grindingEndDatetime: str(dto.grindingEndDatetime),
+    grindingObservation: str(dto.grindingObservation),
+    grindingQaRemarks: str(dto.grindingQaRemarks),
+    particleSizeResult: str(dto.particleSizeResult),
+    qtyKgQualified: str(dto.qtyKgQualified),
+    drying: dryingFormFromDto(dto.drying) as ApUltraFineProcessForm["drying"],
+    sieving: sievingFormFromDto(dto.sieving) as ApUltraFineProcessForm["sieving"],
+  };
+};
+
+const aluminumDtoFromForm = (form: AluminumProcessForm): AluminumProcessDto => ({
+  equipmentId: form.equipmentId.trim() || null,
+  setRpm: form.setRpm.trim() || null,
+  startDatetime: formatDateTimeForApi(form.startDatetime) || null,
+  endDatetime: formatDateTimeForApi(form.endDatetime) || null,
+  observation: form.observation.trim() || null,
+  qaRemarks: form.qaRemarks.trim() || null,
+  qtyKgQualified: form.qtyKgQualified.trim() || null,
+  dispatchDatetime: formatDateTimeForApi(form.dispatchDatetime) || null,
+});
+
+const aluminumFormFromDto = (
+  dto: AluminumProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): AluminumProcessForm => {
+  const empty = createEmptyAluminumProcessForm();
+  if (!dto) {
+    return { ...empty, lotDetails };
+  }
+  return {
+    uiKey: "aluminum",
+    lotDetails,
+    lotDetailsQaRemarks: empty.lotDetailsQaRemarks,
+    equipmentId: str(dto.equipmentId),
+    setRpm: str(dto.setRpm),
+    startDatetime: str(dto.startDatetime),
+    endDatetime: str(dto.endDatetime),
+    observation: str(dto.observation),
+    qaRemarks: str(dto.qaRemarks),
+    qtyKgQualified: str(dto.qtyKgQualified),
+    dispatchDatetime: str(dto.dispatchDatetime),
+  };
+};
+
+const doaDtoFromForm = (form: {
+  dispatchDatetime: string;
+  observation: string;
+  qaRemarks?: string;
+  totalQtySentForPremix: string;
+  sievingDatetime?: string;
+  quantitySieved?: string;
+  sieveMeshSize?: string;
+}): DoaProcessDto => ({
+  sievingDatetime:
+    form.sievingDatetime != null ? formatDateTimeForApi(form.sievingDatetime) || null : null,
+  quantitySieved: form.quantitySieved != null ? form.quantitySieved.trim() || null : null,
+  sieveMeshSize: form.sieveMeshSize != null ? form.sieveMeshSize.trim() || null : null,
+  dispatchDatetime: formatDateTimeForApi(form.dispatchDatetime) || null,
+  observation: form.observation.trim() || null,
+  qaRemarks: form.qaRemarks != null ? form.qaRemarks.trim() || null : null,
+  totalQtySentForPremix: form.totalQtySentForPremix.trim() || null,
+});
+
+const doaFormFromDto = (
+  uiKey: LiquidDispatchUiKey,
+  dto: DoaProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): DoaProcessForm => {
+  const empty = createEmptyDoaProcessForm(uiKey);
+  if (!dto) {
+    return { ...empty, lotDetails };
+  }
+  return {
+    uiKey,
+    lotDetails,
+    lotDetailsQaRemarks: empty.lotDetailsQaRemarks,
+    dispatchDatetime: str(dto.dispatchDatetime),
+    observation: str(dto.observation),
+    qaRemarks: str(dto.qaRemarks),
+    totalQtySentForPremix: str(dto.totalQtySentForPremix),
+  };
+};
+
+const ccFormFromDto = (
+  uiKey: CcIoUiKey,
+  dto: DoaProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+  drying: DryingTrayOvenForm,
+  sieving: SievingForm,
+): CcProcessForm => {
+  const empty = createEmptyCcProcessForm(uiKey);
+  if (!dto) {
+    return { ...empty, lotDetails, drying, sieving };
+  }
+  return {
+    uiKey,
+    lotDetails,
+    lotDetailsQaRemarks: empty.lotDetailsQaRemarks,
+    sievingDatetime: str(dto.sievingDatetime),
+    dispatchDatetime: str(dto.dispatchDatetime),
+    observation: str(dto.observation),
+    qaRemarks: str(dto.qaRemarks),
+    totalQtySentForPremix: str(dto.totalQtySentForPremix),
+    drying,
+    sieving,
+  };
+};
+
+const nonoxDFormFromDto = (
+  dto: DoaProcessDto | null | undefined,
+  lotDetails: LotDetailFormRow[],
+): NonoxDProcessForm => {
+  const empty = createEmptyNonoxDProcessForm();
+  if (!dto) {
+    return { ...empty, lotDetails };
+  }
+  return {
+    uiKey: "nonoxD",
+    lotDetails,
+    lotDetailsQaRemarks: empty.lotDetailsQaRemarks,
+    quantitySieved: str(dto.quantitySieved),
+    sieveMeshSize: str(dto.sieveMeshSize),
+    dispatchDatetime: str(dto.dispatchDatetime),
+    observation: str(dto.observation),
+    qaRemarks: str(dto.qaRemarks),
+    totalQtySentForPremix: str(dto.totalQtySentForPremix),
+  };
+};
+
+/** Migrate legacy section bags into typed DTOs when typed fields are empty. */
+const migrateLegacySections = (
+  entry: PreparationProcessEntry,
+): Pick<PreparationProcessEntry, "lotDetails" | "drying" | "sieving"> => {
+  const sections = entry.sections;
+  let lotDetails = entry.lotDetails ?? [];
+  let drying = entry.drying ?? null;
+  let sieving = entry.sieving ?? null;
+
+  const needs =
+    (!lotDetails || lotDetails.length === 0) && !drying && !sieving && Boolean(sections?.length);
+  if (!needs || !sections) {
+    return { lotDetails, drying, sieving };
+  }
+
+  const lotRows = [...sectionRows(sections, "lotDetails"), ...sectionRows(sections, "lotDetail")];
+  if (lotRows.length > 0) {
+    lotDetails = lotRows.map((row) => {
+      const lotId = pickField(row, "lotId", "lotNumber");
+      const qtyText = pickField(row, "quantity");
+      const quantity = qtyText ? Number(qtyText.replace(/,/g, "")) : null;
+      return {
+        lotId,
+        quantity: Number.isFinite(quantity as number) ? quantity : null,
+      };
+    });
+  }
+
+  const dryingRow = firstSectionRow(sections, "dryingTrayOven");
+  if (Object.keys(dryingRow).length > 0) {
+    drying = {
+      ovenType: pickField(dryingRow, "ovenType", "OVEN_TYPE") || null,
+      ovenNumber: pickField(dryingRow, "ovenNumber", "OVEN_NUMBER") || null,
+      ovenSetTemperature:
+        pickField(dryingRow, "ovenSetTemperature", "OVEN_SET_TEMPERATURE") || null,
+      startDatetime: pickField(dryingRow, "startDatetime", "START_DATETIME") || null,
+      endDatetime: pickField(dryingRow, "endDatetime", "END_DATETIME") || null,
+      moisture: pickField(dryingRow, "moisture", "MOISTURE") || null,
+      observation: pickField(dryingRow, "observation", "OBSERVATION") || null,
+      qaRemarks: pickField(dryingRow, "qaRemarks", "QA_REMARKS") || null,
+    };
+  }
+
+  const sievingRow = firstSectionRow(sections, "sieving");
+  if (Object.keys(sievingRow).length > 0) {
+    sieving = {
+      sievingDispatchDatetime:
+        pickField(sievingRow, "sievingDispatchDatetime", "SIEVING_DISPATCH_DATETIME") || null,
+      sievedQuantity: pickField(sievingRow, "sievedQuantity", "SIEVED_QUANTITY") || null,
+      sieveMeshSize: pickField(sievingRow, "sieveMeshSize", "SIEVE_MESH_SIZE") || null,
+      observation: pickField(sievingRow, "observation", "OBSERVATION") || null,
+      qaRemarks: pickField(sievingRow, "qaRemarks", "QA_REMARKS") || null,
+    };
+  }
+
+  return { lotDetails, drying, sieving };
+};
+
+export const hydrateProcessFormFromEntry = (
+  uiKey: RmpMaterialUiKey,
+  entry: PreparationProcessEntry | null | undefined,
+): RmpMaterialProcessForm => {
+  if (!entry) {
+    return createEmptyProcessFormForUiKey(uiKey);
+  }
+
+  const migrated = migrateLegacySections(entry);
+  const lotDetails = toLotFormRows(migrated.lotDetails);
+  // Prefer typed field; fall back to display/legacy section after details reload.
+  const lotDetailsQaRemarks =
+    str(entry.lotDetailsQaRemarks) ||
+    pickField(firstSectionRow(entry.sections, "lotDetailsQaRemarks"), "qaRemarks", "QA_REMARKS");
+  const processRootQaRemarks =
+    str(entry.qaRemarks) ||
+    pickField(firstSectionRow(entry.sections, "processQaRemarks"), "qaRemarks", "QA_REMARKS");
+
+  const withLotQa = <T extends { lotDetailsQaRemarks?: string }>(form: T): T => ({
+    ...form,
+    lotDetailsQaRemarks,
+  });
+
+  if (uiKey === "defaultLiquid") {
+    const form: DefaultLiquidProcessForm = {
+      uiKey: "defaultLiquid",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: processRootQaRemarks,
+    };
+    return form;
+  }
+
+  if (uiKey === "apCoarse") {
+    const form = withLotQa(apCoarseFormFromDto(entry.apCoarse ?? null, lotDetails));
+    return {
+      ...form,
+      blendingDryingQaRemarks:
+        form.blendingDryingQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "blendingDryingQaRemarks"), "qaRemarks"),
+      dryingOperationRvdQaRemarks:
+        form.dryingOperationRvdQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "dryingOperationRvdQaRemarks"), "qaRemarks"),
+      particleSizeDistributionQaRemarks:
+        form.particleSizeDistributionQaRemarks ||
+        pickField(
+          firstSectionRow(entry.sections, "particleSizeDistributionQaRemarks"),
+          "qaRemarks",
+        ),
+    };
+  }
+
+  if (uiKey === "apFine") {
+    const form = withLotQa(apFineFormFromDto(entry.apFine ?? null, lotDetails));
+    return {
+      ...form,
+      grindingQaRemarks:
+        form.grindingQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "grinding"), "grindingQaRemarks", "qaRemarks"),
+      blendingDryingQaRemarks:
+        form.blendingDryingQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "blendingDryingQaRemarks"), "qaRemarks"),
+      dryingOperationRvdQaRemarks:
+        form.dryingOperationRvdQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "dryingOperationRvdQaRemarks"), "qaRemarks"),
+    };
+  }
+
+  if (uiKey === "apUltraFine") {
+    const form = withLotQa(apUltraFineFormFromDto(entry.apUltraFine ?? null, lotDetails));
+    return {
+      ...form,
+      grindingQaRemarks:
+        form.grindingQaRemarks ||
+        pickField(firstSectionRow(entry.sections, "grinding"), "grindingQaRemarks", "qaRemarks"),
+    };
+  }
+
+  if (uiKey === "aluminum") {
+    const form = withLotQa(aluminumFormFromDto(entry.aluminum ?? null, lotDetails));
+    return {
+      ...form,
+      qaRemarks:
+        form.qaRemarks ||
+        pickField(firstSectionRow(entry.sections, "aluminumProcessing"), "qaRemarks"),
+    };
+  }
+
+  if (uiKey === "doa" || uiKey === "htpb" || uiKey === "tdi") {
+    const form = withLotQa(doaFormFromDto(uiKey, entry.doa ?? null, lotDetails));
+    return {
+      ...form,
+      qaRemarks:
+        form.qaRemarks ||
+        pickField(firstSectionRow(entry.sections, "doaProcessing"), "qaRemarks"),
+    };
+  }
+
+  if (uiKey === "cc" || uiKey === "io") {
+    return withLotQa(
+      ccFormFromDto(
+        uiKey,
+        entry.doa ?? null,
+        lotDetails,
+        dryingFormFromDto(migrated.drying),
+        sievingFormFromDto(migrated.sieving),
+      ),
+    );
+  }
+
+  if (uiKey === "nonoxD") {
+    return withLotQa(nonoxDFormFromDto(entry.doa ?? null, lotDetails));
+  }
+
+  const form: DefaultSolidProcessForm = {
+    uiKey: "defaultSolid",
+    lotDetails,
+    lotDetailsQaRemarks,
+    drying: dryingFormFromDto(migrated.drying),
+    sieving: sievingFormFromDto(migrated.sieving),
+  };
+  return form;
+};
+
+/** @deprecated Prefer hydrateProcessFormFromEntry */
+export const hydrateProcessFormFromSections = (
+  uiKey: RmpMaterialUiKey,
+  sections: PreparationProcessEntry["sections"] | undefined,
+): RmpMaterialProcessForm =>
+  hydrateProcessFormFromEntry(uiKey, {
+    materialId: 0,
+    materialCode: "",
+    materialName: "",
+    gradeId: null,
+    gradeCode: null,
+    processType: uiKeyToProcessType(uiKey),
+    lotDetails: [],
+    sections,
+  });
+
+export const processFormToTypedFields = (
+  form: RmpMaterialProcessForm,
+): Pick<
+  PreparationProcessEntry,
+  | "processType"
+  | "lotDetails"
+  | "lotDetailsQaRemarks"
+  | "qaRemarks"
+  | "drying"
+  | "sieving"
+  | "apCoarse"
+  | "apFine"
+  | "apUltraFine"
+  | "aluminum"
+  | "doa"
+> => {
+  const lotDetails = toLotDtos(form.lotDetails);
+  const lotDetailsQaRemarks =
+    "lotDetailsQaRemarks" in form ? String(form.lotDetailsQaRemarks ?? "").trim() || null : null;
+  if (form.uiKey === "defaultLiquid") {
+    return {
+      processType: "DEFAULT_LIQUID",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: String(form.qaRemarks ?? "").trim() || null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: null,
+    };
+  }
+  if (form.uiKey === "apCoarse") {
+    return {
+      processType: "AP_COARSE",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: apCoarseDtoFromForm(form),
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: null,
+    };
+  }
+  if (form.uiKey === "apFine") {
+    return {
+      processType: "AP_FINE",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: apFineDtoFromForm(form),
+      apUltraFine: null,
+      aluminum: null,
+      doa: null,
+    };
+  }
+  if (form.uiKey === "apUltraFine") {
+    return {
+      processType: "AP_ULTRA_FINE",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: apUltraFineDtoFromForm(form),
+      aluminum: null,
+      doa: null,
+    };
+  }
+  if (form.uiKey === "aluminum") {
+    return {
+      processType: "ALUMINUM",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: aluminumDtoFromForm(form),
+      doa: null,
+    };
+  }
+  if (form.uiKey === "doa" || form.uiKey === "htpb" || form.uiKey === "tdi") {
+    return {
+      processType: uiKeyToProcessType(form.uiKey),
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: doaDtoFromForm(form),
+    };
+  }
+  if (form.uiKey === "cc") {
+    return {
+      processType: "CC",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: dryingDtoFromForm(form.drying),
+      sieving: sievingDtoFromForm(form.sieving),
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: doaDtoFromForm(form),
+    };
+  }
+  if (form.uiKey === "io") {
+    return {
+      processType: "IO",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: doaDtoFromForm(form),
+    };
+  }
+  if (form.uiKey === "nonoxD") {
+    return {
+      processType: "NONOX_D",
+      lotDetails,
+      lotDetailsQaRemarks,
+      qaRemarks: null,
+      drying: null,
+      sieving: null,
+      apCoarse: null,
+      apFine: null,
+      apUltraFine: null,
+      aluminum: null,
+      doa: doaDtoFromForm(form),
+    };
+  }
+  return {
+    processType: "DEFAULT_SOLID",
+    lotDetails,
+    lotDetailsQaRemarks,
+    qaRemarks: null,
+    drying: dryingDtoFromForm(form.drying),
+    sieving: sievingDtoFromForm(form.sieving),
+    apCoarse: null,
+    apFine: null,
+    apUltraFine: null,
+    aluminum: null,
+    doa: null,
+  };
+};
+
+/** Convert typed process to display sections for approver / details tables. */
+export const typedProcessToDisplaySections = (
+  entry: PreparationProcessEntry,
+): Array<{ sectionId: string; sectionData: Record<string, unknown>[] }> => {
+  const migrated = migrateLegacySections(entry);
+  const sections: Array<{ sectionId: string; sectionData: Record<string, unknown>[] }> = [];
+
+  if (migrated.lotDetails?.length) {
+    sections.push({
+      sectionId: "lotDetails",
+      sectionData: migrated.lotDetails.map((lot) => ({
+        lotId: lot.lotId,
+        quantity: lot.quantity,
+      })),
+    });
+  }
+  if (entry.lotDetailsQaRemarks && String(entry.lotDetailsQaRemarks).trim()) {
+    sections.push({
+      sectionId: "lotDetailsQaRemarks",
+      sectionData: [{ qaRemarks: entry.lotDetailsQaRemarks }],
+    });
+  }
+  if (entry.qaRemarks && String(entry.qaRemarks).trim()) {
+    sections.push({
+      sectionId: "processQaRemarks",
+      sectionData: [{ qaRemarks: entry.qaRemarks }],
+    });
+  }
+  if (migrated.drying) {
+    const row: Record<string, unknown> = {};
+    Object.entries(migrated.drying).forEach(([k, v]) => {
+      if (v != null && String(v).trim() !== "") row[k] = v;
+    });
+    if (Object.keys(row).length > 0) {
+      sections.push({ sectionId: "dryingTrayOven", sectionData: [row] });
+    }
+  }
+  if (migrated.sieving) {
+    const row: Record<string, unknown> = {};
+    Object.entries(migrated.sieving).forEach(([k, v]) => {
+      if (v != null && String(v).trim() !== "") row[k] = v;
+    });
+    if (Object.keys(row).length > 0) {
+      sections.push({ sectionId: "sieving", sectionData: [row] });
+    }
+  }
+  if (entry.apCoarse) {
+    const ap = entry.apCoarse;
+    if (ap.equipmentType) {
+      sections.push({
+        sectionId: "apEquipment",
+        sectionData: [{ equipmentType: ap.equipmentType }],
+      });
+    }
+    if (ap.blendingDryingParameters?.length) {
+      sections.push({
+        sectionId: "blendingDryingParameters",
+        sectionData: ap.blendingDryingParameters as Record<string, unknown>[],
+      });
+    }
+    if (ap.dryingOperationRvd?.length) {
+      sections.push({
+        sectionId: "dryingOperationRvd",
+        sectionData: ap.dryingOperationRvd as Record<string, unknown>[],
+      });
+    }
+    if (ap.particleSizeDistribution?.length) {
+      sections.push({
+        sectionId: "particleSizeDistribution",
+        sectionData: ap.particleSizeDistribution as Record<string, unknown>[],
+      });
+    }
+    if (ap.blendingDryingQaRemarks) {
+      sections.push({
+        sectionId: "blendingDryingQaRemarks",
+        sectionData: [{ qaRemarks: ap.blendingDryingQaRemarks }],
+      });
+    }
+    if (ap.dryingOperationRvdQaRemarks) {
+      sections.push({
+        sectionId: "dryingOperationRvdQaRemarks",
+        sectionData: [{ qaRemarks: ap.dryingOperationRvdQaRemarks }],
+      });
+    }
+    if (ap.particleSizeDistributionQaRemarks) {
+      sections.push({
+        sectionId: "particleSizeDistributionQaRemarks",
+        sectionData: [{ qaRemarks: ap.particleSizeDistributionQaRemarks }],
+      });
+    }
+  }
+  if (entry.apFine) {
+    const ap = entry.apFine;
+    sections.push({
+      sectionId: "apFineGrinding",
+      sectionData: [
+        {
+          acmEquipmentId: ap.acmEquipmentId,
+          millRpm: ap.millRpm,
+          classifierRpm: ap.classifierRpm,
+          screwFeederRpm: ap.screwFeederRpm,
+          idFanRpm: ap.idFanRpm,
+          setPressure: ap.setPressure,
+          grindingStartDatetime: ap.grindingStartDatetime,
+          grindingEndDatetime: ap.grindingEndDatetime,
+          grindingObservation: ap.grindingObservation,
+          grindingQaRemarks: ap.grindingQaRemarks,
+          qtyKgQualified: ap.qtyKgQualified,
+        },
+      ],
+    });
+    if (ap.particleSizeDistribution?.length) {
+      sections.push({
+        sectionId: "particleSizeDistribution",
+        sectionData: ap.particleSizeDistribution as Record<string, unknown>[],
+      });
+    }
+    if (ap.blendingDryingParameters?.length) {
+      sections.push({
+        sectionId: "blendingDryingParameters",
+        sectionData: ap.blendingDryingParameters as Record<string, unknown>[],
+      });
+    }
+    if (ap.dryingOperationRvd?.length) {
+      sections.push({
+        sectionId: "dryingOperationRvd",
+        sectionData: ap.dryingOperationRvd as Record<string, unknown>[],
+      });
+    }
+    if (ap.trayOvenStorage) {
+      const row: Record<string, unknown> = {};
+      Object.entries(ap.trayOvenStorage).forEach(([k, v]) => {
+        if (v != null && String(v).trim() !== "") row[k] = v;
+      });
+      if (Object.keys(row).length > 0) {
+        sections.push({ sectionId: "trayOvenStorage", sectionData: [row] });
+      }
+    }
+    if (ap.sieving) {
+      const row: Record<string, unknown> = {};
+      Object.entries(ap.sieving).forEach(([k, v]) => {
+        if (v != null && String(v).trim() !== "") row[k] = v;
+      });
+      if (Object.keys(row).length > 0) {
+        sections.push({ sectionId: "sieving", sectionData: [row] });
+      }
+    }
+  }
+  if (entry.apUltraFine) {
+    const ap = entry.apUltraFine;
+    sections.push({
+      sectionId: "apUltraFineGrinding",
+      sectionData: [
+        {
+          equipmentId: ap.equipmentId,
+          screwFeederRpm: ap.screwFeederRpm,
+          feedPressure: ap.feedPressure,
+          grindingPressure: ap.grindingPressure,
+          grindingStartDatetime: ap.grindingStartDatetime,
+          grindingEndDatetime: ap.grindingEndDatetime,
+          grindingObservation: ap.grindingObservation,
+          grindingQaRemarks: ap.grindingQaRemarks,
+          particleSizeResult: ap.particleSizeResult,
+          qtyKgQualified: ap.qtyKgQualified,
+        },
+      ],
+    });
+    if (ap.drying) {
+      const row: Record<string, unknown> = {};
+      Object.entries(ap.drying).forEach(([k, v]) => {
+        if (v != null && String(v).trim() !== "") row[k] = v;
+      });
+      if (Object.keys(row).length > 0) {
+        sections.push({ sectionId: "dryingTrayOven", sectionData: [row] });
+      }
+    }
+    if (ap.sieving) {
+      const row: Record<string, unknown> = {};
+      Object.entries(ap.sieving).forEach(([k, v]) => {
+        if (v != null && String(v).trim() !== "") row[k] = v;
+      });
+      if (Object.keys(row).length > 0) {
+        sections.push({ sectionId: "sieving", sectionData: [row] });
+      }
+    }
+  }
+  if (entry.aluminum) {
+    const al = entry.aluminum;
+    sections.push({
+      sectionId: "aluminumProcessing",
+      sectionData: [
+        {
+          equipmentId: al.equipmentId,
+          setRpm: al.setRpm,
+          startDatetime: al.startDatetime,
+          endDatetime: al.endDatetime,
+          observation: al.observation,
+          qaRemarks: al.qaRemarks,
+          qtyKgQualified: al.qtyKgQualified,
+          dispatchDatetime: al.dispatchDatetime,
+        },
+      ],
+    });
+  }
+  if (entry.doa) {
+    const d = entry.doa;
+    sections.push({
+      sectionId: "doaProcessing",
+      sectionData: [
+        {
+          sievingDatetime: d.sievingDatetime,
+          quantitySieved: d.quantitySieved,
+          sieveMeshSize: d.sieveMeshSize,
+          dispatchDatetime: d.dispatchDatetime,
+          observation: d.observation,
+          qaRemarks: d.qaRemarks,
+          totalQtySentForPremix: d.totalQtySentForPremix,
+        },
+      ],
+    });
+  }
+  return sections;
+};
+
+export const resolveUiKeyForProcessEntry = (
+  slot: "solid" | "liquid",
+  entry: PreparationProcessEntry | null | undefined,
+  materialCode: string,
+  resolveUiKey: (params: { materialCode: string; slot: "solid" | "liquid" }) => RmpMaterialUiKey,
+): RmpMaterialUiKey => {
+  if (entry?.processType) return processTypeToUiKey(entry.processType);
+  return resolveUiKey({ materialCode, slot });
+};

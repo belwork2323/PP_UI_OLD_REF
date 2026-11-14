@@ -1,0 +1,252 @@
+// app/config/routes.jsx
+import { Navigate } from "react-router-dom";
+import LoginPage from "../../ui/pages/auth/LoginPage";
+import ChangePasswordPage from "../../ui/pages/auth/ChangePasswordPage";
+
+import { lazy } from "react";
+
+const CHUserManagementPage = lazy(
+  () => import("@/ui/pages/centrehead/UserManagement/UserManagementPage"),
+);
+const CHBatchManagementPage = lazy(
+  () => import("@/ui/pages/centrehead/BatchManagement/BatchManagementPage"),
+);
+const CHProjectManagementPage = lazy(
+  () => import("@/ui/pages/centrehead/ProjectManagement/ProjectManagementPage"),
+);
+const CHDashboard = lazy(() => import("@/ui/pages/centrehead/Dashboard/CentreheadDashboardPage"));
+const BlockchainEvents = lazy(() => import("@/ui/pages/admin/BlockchainEvents/BlockchainPage"));
+
+const DashboardPage = lazy(() => import("@ui/pages/admin/Dashboard/DashboardPage"));
+const UserManagementPage = lazy(() => import("@ui/pages/admin/UserManagement/UserManagementPage"));
+const PasswordResetRequestsPage = lazy(
+  () => import("@ui/pages/admin/UserManagement/PasswordResetRequestsPage"),
+);
+const BatchManagementPage = lazy(
+  () => import("@ui/pages/admin/BatchManagement/BatchManagementPage"),
+);
+const MotorManagementPage = lazy(
+  () => import("@ui/pages/admin/MotorManagement/MotorManagementPage"),
+);
+const ProjectManagementPage = lazy(
+  () => import("@ui/pages/admin/ProjectManagement/ProjectManagementPage"),
+);
+const MasterDataPage = lazy(() => import("@ui/pages/admin/MasterData/MasterDataPage"));
+
+const SystemManagerDashboard = lazy(
+  () => import("../../ui/pages/systemManager/SystemManagerDashboard"),
+);
+
+const SourcingDashboard = lazy(() => import("../../ui/pages/user/sourcing/SourcingDashboard"));
+
+const ManufacturingDashboard = lazy(
+  () => import("../../ui/pages/user/manufacturing/ManufacturingDashboard"),
+);
+
+const QualityControlDashboard = lazy(
+  () => import("../../ui/pages/user/qualityControl/QualityControlDashboard"),
+);
+
+const DispatchDashboard = lazy(() => import("../../ui/pages/user/dispatch/DispatchDashboard"));
+
+const SourcingApproverDashboard = lazy(
+  () => import("../../ui/pages/approver/sourcing/SourcingApproverDashboard"),
+);
+
+const ManufacturingApproverDashboard = lazy(
+  () => import("../../ui/pages/approver/manufacturing/ManufacturingApproverDashboard"),
+);
+
+const QualityControlApproverDashboard = lazy(
+  () => import("../../ui/pages/approver/qualityControl/QualityControlApproverDashboard"),
+);
+
+const DispatchApproverDashboard = lazy(
+  () => import("../../ui/pages/approver/dispatch/DispatchApproverDashboard"),
+);
+
+const BlockchainExplorerPage = lazy(
+  () => import("../../ui/pages/admin/ExploreBlockchain/BlockchainExplorerPage"),
+);
+
+export const routes = [
+  /* ---------- AUTH (PUBLIC) ---------- */
+  {
+    path: "/login",
+    element: <LoginPage />,
+    isProtected: false,
+  },
+  {
+    path: "/reset-password",
+    element: <Navigate to="/login?mode=reset" replace />,
+    isProtected: false,
+  },
+  {
+    path: "/change-password",
+    element: <ChangePasswordPage />,
+    isProtected: true,
+    allowMustChangePassword: true,
+  },
+
+  /* ---------- PROTECTED DASHBOARDS ---------- */
+  {
+    path: "/admin",
+    element: <DashboardPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/users",
+    element: <UserManagementPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/users/password-requests",
+    element: <PasswordResetRequestsPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/batch",
+    element: <BatchManagementPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/motors",
+    element: <MotorManagementPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/projects",
+    element: <ProjectManagementPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/master-data",
+    element: <MasterDataPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/blockchain-events",
+    element: <BlockchainEvents />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/admin/blockchain-explorer",
+    element: <BlockchainExplorerPage />,
+    isProtected: true,
+    roles: ["ADMIN"],
+  },
+  {
+    path: "/centre-head",
+    element: <CHDashboard />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/users",
+    element: <CHUserManagementPage />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/batch",
+    element: <CHBatchManagementPage />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/motors",
+    element: <MotorManagementPage />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/projects",
+    element: <CHProjectManagementPage />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/master-data",
+    element: <MasterDataPage />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/centre-head/blockchain-events",
+    element: <BlockchainEvents />,
+    isProtected: true,
+    roles: ["CENTRE_HEAD"],
+  },
+  {
+    path: "/system-manager",
+    element: <SystemManagerDashboard />,
+    isProtected: true,
+    roles: ["SYSTEM_MANAGER"],
+  },
+  {
+    path: "/system-manager/motors",
+    element: <MotorManagementPage />,
+    isProtected: true,
+    roles: ["SYSTEM_MANAGER"],
+  },
+
+  /* ---------- USER ROUTES ---------- */
+  {
+    path: "/user/sourcing/:subDept",
+    element: <SourcingDashboard />,
+    isProtected: true,
+    roles: ["USER"],
+  },
+  {
+    path: "/user/manufacturing/:subDept",
+    element: <ManufacturingDashboard />,
+    isProtected: true,
+    roles: ["USER"],
+  },
+  {
+    path: "/user/quality/:subDept",
+    element: <QualityControlDashboard />,
+    isProtected: true,
+    roles: ["USER"],
+  },
+  {
+    path: "/user/dispatch/:subDept",
+    element: <DispatchDashboard />,
+    isProtected: true,
+    roles: ["USER"],
+  },
+
+  // Approver routes — same pattern
+  {
+    path: "/approver/sourcing/:subDept",
+    element: <SourcingApproverDashboard />,
+    isProtected: true,
+    roles: ["APPROVER"],
+  },
+  {
+    path: "/approver/manufacturing/:subDept",
+    element: <ManufacturingApproverDashboard />,
+    isProtected: true,
+    roles: ["APPROVER"],
+  },
+  {
+    path: "/approver/quality/:subDept",
+    element: <QualityControlApproverDashboard />,
+    isProtected: true,
+    roles: ["APPROVER"],
+  },
+  {
+    path: "/approver/dispatch/:subDept",
+    element: <DispatchApproverDashboard />,
+    isProtected: true,
+    roles: ["APPROVER"],
+  },
+];

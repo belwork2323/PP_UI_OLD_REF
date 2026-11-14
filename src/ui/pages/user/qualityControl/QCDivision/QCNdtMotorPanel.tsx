@@ -1,0 +1,882 @@
+import { useCallback, useMemo, type ReactNode } from "react";
+import {
+  Box,
+  Button,
+  IconButton,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+  alpha,
+} from "@mui/material";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import { QC_DIVISION_BRAND } from "../../../../../app/theme/custom_themes/user/qualityControl/tokens";
+import type { SchemaFormValues } from "@/data/models/shared/sectionFormTypes";
+import type { FileRef } from "../../../../../data/models/common/FileUploadModel";
+import { STRINGS } from "../../../../../app/config/strings";
+import QCDivisionFileField from "./QCDivisionFileField";
+import {
+  QC_NDT_FIELD_LABELS,
+  QC_NDT_SECTION_TITLES,
+  emptyNdtObservationCustomRow,
+  emptyNdtVisualCustomRow,
+  getQcNdtMotorLabel,
+  renumberQcNdtRows,
+  type QcNdtRadiographyDetailRow,
+  type QcNdtRadiographyObservationRow,
+  type QcNdtVisualInspectionRow,
+} from "../../../../../hooks/user/qualityControl/qcNdtConfig";
+import {
+  getNdtAdditionalRemarks,
+  getNdtObservationRows,
+  getNdtQaRemarks,
+  getNdtRadiographyDetailRows,
+  getNdtSignedReport,
+  getNdtUploadMedia,
+  getNdtVisualRows,
+  setNdtObservationRows,
+  setNdtQaRemarks,
+  setNdtRadiographyDetailRows,
+  setNdtSignedReport,
+  setNdtUploadMedia,
+  setNdtVisualRows,
+} from "../../../../../hooks/user/qualityControl/qcNdtTables";
+import {
+  QCDivisionReadOnlyValue,
+  qcReadOnlyBodyCellSx,
+  qcReadOnlyTableContainerSx,
+  qcReadOnlyTableHeaderCellSx,
+} from "./components/QCDivisionReadOnlyValue";
+import { uniformTableHeaderCellSx } from "@app/theme/custom_themes/shared/data_table_theme";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+import FieldErrorText from "@/ui/components/validation/FieldErrorText";
+import { fieldError } from "@/data/validation/adapters/qcNdtDivision.validation";
+
+const BRAND = QC_DIVISION_BRAND;
+const NDT_S = STRINGS.QUALITY_CONTROL.NDT;
+const TABLE_BORDER = alpha(BRAND.primary, 0.18);
+const HEADER_CELL_BORDER = alpha("#fff", 0.22);
+
+const TH = {
+  ...uniformTableHeaderCellSx(BRAND.primary, BRAND.primaryLight, {
+    headerFontSize: "0.68rem",
+    headerLetterSpacing: "0.06em",
+    headerPaddingY: "10px",
+    headerPaddingX: "12px",
+  }),
+  border: `1px solid ${HEADER_CELL_BORDER}`,
+};
+
+const cellSx = {
+  fontSize: "0.72rem",
+  py: 0.75,
+  px: 0.75,
+  verticalAlign: "middle",
+  border: `1px solid ${TABLE_BORDER}`,
+};
+
+const tableFieldSx = { "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } };
+
+const SectionCard = ({
+  title,
+  children,
+  readOnly = false,
+}: {
+  title: string;
+  children: ReactNode;
+  readOnly?: boolean;
+}) =>
+  readOnly ? (
+    <Box
+      sx={{
+        border: `1px solid ${BRAND.border}`,
+        borderRadius: 1,
+        background: "#fff",
+        p: 1.5,
+      }}
+    >
+      <Typography sx={{ fontSize: "0.78rem", fontWeight: 800, color: BRAND.primary, mb: 0.75 }}>
+        {title}
+      </Typography>
+      {children}
+    </Box>
+  ) : (
+    <Box
+      sx={{
+        borderRadius: 2,
+        border: `1px solid ${TABLE_BORDER}`,
+        background: "#fff",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          px: 1.5,
+          py: 0.85,
+          background: `linear-gradient(135deg, ${BRAND.primary}, ${BRAND.primaryLight})`,
+        }}
+      >
+        <Typography sx={{ fontSize: "0.76rem", fontWeight: 800, color: "#fff", letterSpacing: "0.04em" }}>
+          {title}
+        </Typography>
+      </Box>
+      <Box sx={{ p: 1.5 }}>{children}</Box>
+    </Box>
+  );
+
+const RadiographyDetailsTable = ({
+  rows,
+  onChange,
+  readOnly = false,
+  disabled = false,
+  validationErrors = null,
+}: {
+  rows: QcNdtRadiographyDetailRow[];
+  onChange: (rows: QcNdtRadiographyDetailRow[]) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  validationErrors?: Record<string, string> | null;
+}) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+  const inputsDisabled = disabled || readOnly;
+  const columns: Array<{
+    id: keyof QcNdtRadiographyDetailRow;
+    label: string;
+    kind: "text" | "number";
+    required?: boolean;
+  }> = [
+    { id: "MACHINE_NO", label: QC_NDT_FIELD_LABELS.MACHINE_NO, kind: "text", required: true },
+    {
+      id: "NO_OF_SECTIONS",
+      label: QC_NDT_FIELD_LABELS.NO_OF_SECTIONS,
+      kind: "number",
+      required: true,
+    },
+    {
+      id: "NO_OF_ORIENTATIONS",
+      label: QC_NDT_FIELD_LABELS.NO_OF_ORIENTATIONS,
+      kind: "number",
+      required: true,
+    },
+    {
+      id: "NORMAL_EXPOSURES",
+      label: QC_NDT_FIELD_LABELS.NORMAL_EXPOSURES,
+      kind: "number",
+      required: true,
+    },
+    {
+      id: "TANGENTIAL_EXPOSURES",
+      label: QC_NDT_FIELD_LABELS.TANGENTIAL_EXPOSURES,
+      kind: "number",
+      required: true,
+    },
+    {
+      id: "QA_REMARKS",
+      label: QC_NDT_FIELD_LABELS.QA_REMARKS,
+      kind: "text",
+    },
+  ];
+
+  const updateCell = (index: number, field: keyof QcNdtRadiographyDetailRow, value: string) => {
+    onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
+  };
+
+  return (
+    <Box>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : { border: `1px solid ${TABLE_BORDER}`, borderRadius: 1, overflowX: "auto" }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 980, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.SR_NO}</TableCell>
+              {columns.map((column) => (
+                <TableCell key={column.id} sx={headerSx}>
+                  {column.required ? (
+                    <FieldLabelWithAsterisk
+                      label={column.label}
+                      required
+                      sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                    />
+                  ) : (
+                    column.label
+                  )}
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow
+                key={`rt-${index}`}
+                sx={{
+                  background: readOnly
+                    ? index % 2 === 0
+                      ? "#fff"
+                      : alpha(BRAND.primaryLight, 0.04)
+                    : undefined,
+                }}
+              >
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? <QCDivisionReadOnlyValue value={index + 1} /> : index + 1}
+                </TableCell>
+                {columns.map((column) => {
+                  const value = String(row[column.id] ?? "");
+                  const path = `RADIOGRAPHY_DETAILS.${index}.${column.id}`;
+                  const message = fieldError(validationErrors ?? undefined, path);
+                  return (
+                    <TableCell key={column.id} sx={bodyCellSx}>
+                      {readOnly ? (
+                        <QCDivisionReadOnlyValue value={value} muted={!value.trim()} />
+                      ) : (
+                        <Box data-qc-field={path}>
+                          <TextField
+                            size="small"
+                            fullWidth
+                            type={column.kind === "number" ? "number" : "text"}
+                            value={value}
+                            disabled={inputsDisabled}
+                            onChange={(event) => updateCell(index, column.id, event.target.value)}
+                            inputProps={{ "data-qc-field": path }}
+                            sx={tableFieldSx}
+                            error={Boolean(message)}
+                          />
+                          <FieldErrorText message={message} />
+                        </Box>
+                      )}
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+};
+
+const ObservationTable = ({
+  rows,
+  onChange,
+  readOnly = false,
+  disabled = false,
+  validationErrors = null,
+}: {
+  rows: QcNdtRadiographyObservationRow[];
+  onChange: (rows: QcNdtRadiographyObservationRow[]) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  validationErrors?: Record<string, string> | null;
+}) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+  const inputsDisabled = disabled || readOnly;
+
+  const updateCell = (
+    index: number,
+    field: "TYPE_OF_DEFECT" | "OBSERVATIONS" | "LOCATION" | "QA_REMARKS",
+    value: string,
+  ) => {
+    onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
+  };
+
+  const addRow = () => {
+    onChange(
+      renumberQcNdtRows([...rows, emptyNdtObservationCustomRow(rows.length + 1)]),
+    );
+  };
+
+  const removeRow = (index: number) => {
+    const row = rows[index];
+    if (!row || row.isPreset !== false) return;
+    onChange(renumberQcNdtRows(rows.filter((_, rowIndex) => rowIndex !== index)));
+  };
+
+  return (
+    <Box>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : { border: `1px solid ${TABLE_BORDER}`, borderRadius: 1, overflowX: "auto" }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 780, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.SR_NO}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.TYPE_OF_DEFECT}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.OBSERVATIONS}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.LOCATION}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.QA_REMARKS}</TableCell>
+              {!readOnly ? <TableCell sx={{ ...headerSx, width: 44 }} /> : null}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => {
+              const isCustom = row.isPreset === false;
+              const defectPath = `RADIOGRAPHY_OBSERVATIONS.${index}.TYPE_OF_DEFECT`;
+              const observationsPath = `RADIOGRAPHY_OBSERVATIONS.${index}.OBSERVATIONS`;
+              const locationPath = `RADIOGRAPHY_OBSERVATIONS.${index}.LOCATION`;
+              const qaPath = `RADIOGRAPHY_OBSERVATIONS.${index}.QA_REMARKS`;
+              const defectMsg = fieldError(validationErrors ?? undefined, defectPath);
+              const observationsMsg = fieldError(validationErrors ?? undefined, observationsPath);
+              const locationMsg = fieldError(validationErrors ?? undefined, locationPath);
+              const qaMsg = fieldError(validationErrors ?? undefined, qaPath);
+              return (
+              <TableRow
+                key={`obs-${row.SR_NO}-${index}`}
+                sx={{
+                  background: readOnly
+                    ? index % 2 === 0
+                      ? "#fff"
+                      : alpha(BRAND.primaryLight, 0.04)
+                    : undefined,
+                }}
+              >
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? <QCDivisionReadOnlyValue value={row.SR_NO} /> : row.SR_NO}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly || !isCustom ? (
+                    <QCDivisionReadOnlyValue value={row.TYPE_OF_DEFECT} />
+                  ) : (
+                    <Box data-qc-field={defectPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        value={row.TYPE_OF_DEFECT}
+                        disabled={inputsDisabled}
+                        placeholder={QC_NDT_FIELD_LABELS.TYPE_OF_DEFECT}
+                        onChange={(event) => updateCell(index, "TYPE_OF_DEFECT", event.target.value)}
+                        inputProps={{ "data-qc-field": defectPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(defectMsg)}
+                      />
+                      <FieldErrorText message={defectMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.OBSERVATIONS} muted={!row.OBSERVATIONS.trim()} />
+                  ) : (
+                    <Box data-qc-field={observationsPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        multiline
+                        minRows={1}
+                        value={row.OBSERVATIONS}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateCell(index, "OBSERVATIONS", event.target.value)}
+                        inputProps={{ "data-qc-field": observationsPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(observationsMsg)}
+                      />
+                      <FieldErrorText message={observationsMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.LOCATION} muted={!row.LOCATION.trim()} />
+                  ) : (
+                    <Box data-qc-field={locationPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        value={row.LOCATION}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateCell(index, "LOCATION", event.target.value)}
+                        inputProps={{ "data-qc-field": locationPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(locationMsg)}
+                      />
+                      <FieldErrorText message={locationMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.QA_REMARKS} muted={!row.QA_REMARKS?.trim()} />
+                  ) : (
+                    <Box data-qc-field={qaPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        multiline
+                        minRows={1}
+                        value={row.QA_REMARKS ?? ""}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateCell(index, "QA_REMARKS", event.target.value)}
+                        inputProps={{ "data-qc-field": qaPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(qaMsg)}
+                      />
+                      <FieldErrorText message={qaMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                {!readOnly ? (
+                  <TableCell sx={bodyCellSx} align="center">
+                    {isCustom ? (
+                      <IconButton
+                        size="small"
+                        disabled={inputsDisabled}
+                        onClick={() => removeRow(index)}
+                        sx={{ color: BRAND.danger }}
+                      >
+                        <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    ) : null}
+                  </TableCell>
+                ) : null}
+              </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {!readOnly ? (
+        <Box sx={{ mt: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddRoundedIcon />}
+            disabled={inputsDisabled}
+            onClick={addRow}
+            sx={{ textTransform: "none" }}
+          >
+            Add row
+          </Button>
+        </Box>
+      ) : null}
+    </Box>
+  );
+};
+
+const VisualInspectionTable = ({
+  rows,
+  onChange,
+  onFilesChange,
+  readOnly = false,
+  disabled = false,
+  validationErrors = null,
+}: {
+  rows: QcNdtVisualInspectionRow[];
+  onChange: (rows: QcNdtVisualInspectionRow[]) => void;
+  onFilesChange: (rowIndex: number, next: FileRef[]) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  validationErrors?: Record<string, string> | null;
+}) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+  const inputsDisabled = disabled || readOnly;
+
+  const updateTextCell = (
+    index: number,
+    field: "OBSERVATION_TYPE" | "OBSERVATION" | "LOCATION" | "QA_REMARKS",
+    value: string,
+  ) => {
+    onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
+  };
+
+  const addRow = () => {
+    onChange(renumberQcNdtRows([...rows, emptyNdtVisualCustomRow(rows.length + 1)]));
+  };
+
+  const removeRow = (index: number) => {
+    const row = rows[index];
+    if (!row || row.isPreset !== false) return;
+    onChange(renumberQcNdtRows(rows.filter((_, rowIndex) => rowIndex !== index)));
+  };
+
+  return (
+    <Box>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : { border: `1px solid ${TABLE_BORDER}`, borderRadius: 1, overflowX: "auto" }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 900, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.SR_NO}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.OBSERVATION_TYPE}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.OBSERVATION}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.LOCATION}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.QA_REMARKS}</TableCell>
+              <TableCell sx={headerSx}>{QC_NDT_FIELD_LABELS.UPLOAD_IMAGE}</TableCell>
+              {!readOnly ? <TableCell sx={{ ...headerSx, width: 44 }} /> : null}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => {
+              const isCustom = row.isPreset === false;
+              const typePath = `VISUAL_INSPECTION.${index}.OBSERVATION_TYPE`;
+              const observationPath = `VISUAL_INSPECTION.${index}.OBSERVATION`;
+              const locationPath = `VISUAL_INSPECTION.${index}.LOCATION`;
+              const qaPath = `VISUAL_INSPECTION.${index}.QA_REMARKS`;
+              const uploadPath = `VISUAL_INSPECTION.${index}.UPLOAD_IMAGE`;
+              const typeMsg = fieldError(validationErrors ?? undefined, typePath);
+              const observationMsg = fieldError(validationErrors ?? undefined, observationPath);
+              const locationMsg = fieldError(validationErrors ?? undefined, locationPath);
+              const qaMsg = fieldError(validationErrors ?? undefined, qaPath);
+              const uploadMsg = fieldError(validationErrors ?? undefined, uploadPath);
+              return (
+              <TableRow
+                key={`vi-${row.SR_NO}-${index}`}
+                sx={{
+                  background: readOnly
+                    ? index % 2 === 0
+                      ? "#fff"
+                      : alpha(BRAND.primaryLight, 0.04)
+                    : undefined,
+                }}
+              >
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? <QCDivisionReadOnlyValue value={row.SR_NO} /> : row.SR_NO}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly || !isCustom ? (
+                    <QCDivisionReadOnlyValue value={row.OBSERVATION_TYPE} />
+                  ) : (
+                    <Box data-qc-field={typePath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        value={row.OBSERVATION_TYPE}
+                        disabled={inputsDisabled}
+                        placeholder={QC_NDT_FIELD_LABELS.OBSERVATION_TYPE}
+                        onChange={(event) =>
+                          updateTextCell(index, "OBSERVATION_TYPE", event.target.value)
+                        }
+                        inputProps={{ "data-qc-field": typePath }}
+                        sx={tableFieldSx}
+                        error={Boolean(typeMsg)}
+                      />
+                      <FieldErrorText message={typeMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.OBSERVATION} muted={!row.OBSERVATION.trim()} />
+                  ) : (
+                    <Box data-qc-field={observationPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        multiline
+                        minRows={1}
+                        value={row.OBSERVATION}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateTextCell(index, "OBSERVATION", event.target.value)}
+                        inputProps={{ "data-qc-field": observationPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(observationMsg)}
+                      />
+                      <FieldErrorText message={observationMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.LOCATION} muted={!row.LOCATION.trim()} />
+                  ) : (
+                    <Box data-qc-field={locationPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        value={row.LOCATION}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateTextCell(index, "LOCATION", event.target.value)}
+                        inputProps={{ "data-qc-field": locationPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(locationMsg)}
+                      />
+                      <FieldErrorText message={locationMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.QA_REMARKS} muted={!row.QA_REMARKS?.trim()} />
+                  ) : (
+                    <Box data-qc-field={qaPath}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        multiline
+                        minRows={1}
+                        value={row.QA_REMARKS ?? ""}
+                        disabled={inputsDisabled}
+                        onChange={(event) => updateTextCell(index, "QA_REMARKS", event.target.value)}
+                        inputProps={{ "data-qc-field": qaPath }}
+                        sx={tableFieldSx}
+                        error={Boolean(qaMsg)}
+                      />
+                      <FieldErrorText message={qaMsg} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  <Box sx={{ minWidth: 160, maxWidth: 280 }} data-qc-field={uploadPath}>
+                    <QCDivisionFileField
+                      files={row.UPLOAD_IMAGE ?? []}
+                      onChange={(next) => onFilesChange(index, next)}
+                      multiple
+                      acceptMode="imageVideoPdf"
+                      compact
+                      readOnly={readOnly}
+                      disabled={inputsDisabled}
+                      emptyLabel={NDT_S.FILE_EMPTY_IMAGE}
+                    />
+                    {!readOnly ? <FieldErrorText message={uploadMsg} /> : null}
+                  </Box>
+                </TableCell>
+                {!readOnly ? (
+                  <TableCell sx={bodyCellSx} align="center">
+                    {isCustom ? (
+                      <IconButton
+                        size="small"
+                        disabled={inputsDisabled}
+                        onClick={() => removeRow(index)}
+                        sx={{ color: BRAND.danger }}
+                      >
+                        <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    ) : null}
+                  </TableCell>
+                ) : null}
+              </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {!readOnly ? (
+        <Box sx={{ mt: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddRoundedIcon />}
+            disabled={inputsDisabled}
+            onClick={addRow}
+            sx={{ textTransform: "none" }}
+          >
+            Add row
+          </Button>
+        </Box>
+      ) : null}
+    </Box>
+  );
+};
+
+type QCNdtMotorPanelProps = {
+  motorId?: string | null;
+  values: SchemaFormValues;
+  onChange: (values: SchemaFormValues | ((prev: SchemaFormValues) => SchemaFormValues)) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  headerActions?: ReactNode;
+  validationErrors?: Record<string, string> | null;
+};
+
+const QCNdtMotorPanel = ({
+  motorId,
+  values,
+  onChange,
+  readOnly = false,
+  disabled = false,
+  headerActions,
+  validationErrors = null,
+}: QCNdtMotorPanelProps) => {
+  const inputsDisabled = disabled || readOnly;
+  const radiographyRows = useMemo(() => getNdtRadiographyDetailRows(values), [values]);
+  const observationRows = useMemo(() => getNdtObservationRows(values), [values]);
+  const visualRows = useMemo(() => getNdtVisualRows(values), [values]);
+  const uploadMedia = getNdtUploadMedia(values);
+  const signedReport = getNdtSignedReport(values);
+  const additionalRemarks = getNdtAdditionalRemarks(values);
+  const qaRemarks = getNdtQaRemarks(values);
+
+  const patchValues = useCallback(
+    (updater: (prev: SchemaFormValues) => SchemaFormValues) => {
+      onChange((prev) => updater(prev ?? {}));
+    },
+    [onChange],
+  );
+
+  const patchUploadMedia = useCallback(
+    (next: FileRef[]) => {
+      patchValues((prev) => setNdtUploadMedia(prev, next));
+    },
+    [patchValues],
+  );
+
+  const patchSignedReport = useCallback(
+    (next: FileRef[]) => {
+      patchValues((prev) => setNdtSignedReport(prev, next.slice(0, 1)));
+    },
+    [patchValues],
+  );
+
+  const patchVisualFiles = useCallback(
+    (rowIndex: number, next: FileRef[]) => {
+      patchValues((prev) => {
+        const currentRows = getNdtVisualRows(prev);
+        return setNdtVisualRows(
+          prev,
+          currentRows.map((row, index) =>
+            index === rowIndex ? { ...row, UPLOAD_IMAGE: next } : row,
+          ),
+        );
+      });
+    },
+    [patchValues],
+  );
+
+  return (
+    <Box
+      sx={{
+        borderRadius: 2.5,
+        border: `1px solid ${BRAND.border}`,
+        background: BRAND.surface,
+        px: 1.5,
+        py: 1.25,
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.25} gap={1}>
+        <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+          {getQcNdtMotorLabel(motorId)}
+        </Typography>
+        {headerActions}
+      </Stack>
+      <Stack spacing={1.5}>
+        <SectionCard title={QC_NDT_SECTION_TITLES.RADIOGRAPHY_DETAILS} readOnly={readOnly}>
+          <RadiographyDetailsTable
+            rows={radiographyRows}
+            onChange={(rows) => patchValues((prev) => setNdtRadiographyDetailRows(prev, rows))}
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+        <SectionCard title={QC_NDT_SECTION_TITLES.RADIOGRAPHY_OBSERVATIONS} readOnly={readOnly}>
+          <ObservationTable
+            rows={observationRows}
+            onChange={(rows) => patchValues((prev) => setNdtObservationRows(prev, rows))}
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+        <SectionCard title={QC_NDT_SECTION_TITLES.VISUAL_INSPECTION} readOnly={readOnly}>
+          <VisualInspectionTable
+            rows={visualRows}
+            onChange={(rows) => patchValues((prev) => setNdtVisualRows(prev, rows))}
+            onFilesChange={patchVisualFiles}
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+        <SectionCard title={QC_NDT_SECTION_TITLES.UPLOAD_MEDIA} readOnly={readOnly}>
+          <Box sx={{ minWidth: 220, maxWidth: 480 }}>
+            <QCDivisionFileField
+              files={uploadMedia}
+              onChange={patchUploadMedia}
+              multiple
+              acceptMode="imageVideoPdf"
+              readOnly={readOnly}
+              disabled={inputsDisabled}
+              emptyLabel={NDT_S.FILE_EMPTY_MEDIA}
+            />
+          </Box>
+        </SectionCard>
+        <SectionCard title={QC_NDT_SECTION_TITLES.SIGNED_NDT_REPORT} readOnly={readOnly}>
+          <Stack spacing={1.25}>
+            <Box sx={{ minWidth: 220, maxWidth: 480 }} data-qc-field="SIGNED_REPORT">
+              <QCDivisionFileField
+                files={signedReport}
+                onChange={patchSignedReport}
+                multiple={false}
+                acceptMode="imageVideoPdf"
+                readOnly={readOnly}
+                disabled={inputsDisabled}
+                emptyLabel={NDT_S.FILE_EMPTY_REPORT}
+              />
+              {!readOnly ? (
+                <FieldErrorText
+                  message={fieldError(validationErrors ?? undefined, "SIGNED_REPORT")}
+                />
+              ) : null}
+            </Box>
+            <Box>
+              <Typography
+                sx={{ fontSize: "0.68rem", fontWeight: 700, color: BRAND.textSub, mb: 0.35 }}
+              >
+                {QC_NDT_FIELD_LABELS.ADDITIONAL_REMARKS}
+              </Typography>
+              <QCDivisionReadOnlyValue
+                value={additionalRemarks}
+                muted={!additionalRemarks.trim()}
+              />
+            </Box>
+            {readOnly ? (
+              <Box>
+                <Typography
+                  sx={{ fontSize: "0.68rem", fontWeight: 700, color: BRAND.textSub, mb: 0.35 }}
+                >
+                  {QC_NDT_FIELD_LABELS.QA_REMARKS}
+                </Typography>
+                <QCDivisionReadOnlyValue value={qaRemarks} muted={!qaRemarks.trim()} />
+              </Box>
+            ) : (
+              <Box data-qc-field="QA_REMARKS">
+                <TextField
+                  size="small"
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  label={QC_NDT_FIELD_LABELS.QA_REMARKS}
+                  placeholder={QC_NDT_FIELD_LABELS.QA_REMARKS}
+                  value={qaRemarks}
+                  disabled={inputsDisabled}
+                  onChange={(event) =>
+                    patchValues((prev) => setNdtQaRemarks(prev, event.target.value))
+                  }
+                  inputProps={{ "data-qc-field": "QA_REMARKS" }}
+                  sx={tableFieldSx}
+                  error={Boolean(fieldError(validationErrors ?? undefined, "QA_REMARKS"))}
+                />
+                <FieldErrorText
+                  message={fieldError(validationErrors ?? undefined, "QA_REMARKS")}
+                />
+              </Box>
+            )}
+          </Stack>
+        </SectionCard>
+      </Stack>
+    </Box>
+  );
+};
+
+export default QCNdtMotorPanel;

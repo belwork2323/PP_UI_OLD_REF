@@ -1,0 +1,201 @@
+import React, { useMemo } from "react";
+import { Box, Button, IconButton, Typography } from "@mui/material";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import CasePrepSelect from "../../CasePreparation/CasePrepSelect";
+import CasePrepTextField from "../../CasePreparation/CasePrepTextField";
+import {
+  createEmptyLotDetailRow,
+  sumLotDetailQuantities,
+  type LotDetailFormRow,
+} from "../../../../../../data/models/user/rmp/defaultSolidProcessForm";
+import { sanitizeMasterDataDecimalInput } from "../../../../../../data/models/admin/MasterData/masterDataNumericInput";
+
+type Props = {
+  value: LotDetailFormRow[];
+  onChange: (next: LotDetailFormRow[]) => void;
+  lotOptions?: string[];
+  quantityPerPremix?: number;
+  disabled?: boolean;
+  theme: any;
+  fieldErrors?: Record<string, string>;
+  /** QA Raw Material Processing only — not shown in manufacturing RMP. */
+  showQaRemarks?: boolean;
+  qaRemarks?: string;
+  onQaRemarksChange?: (value: string) => void;
+};
+
+const LotDetailsSection = ({
+  value,
+  onChange,
+  lotOptions = [],
+  quantityPerPremix,
+  disabled,
+  theme,
+  fieldErrors = {},
+  showQaRemarks = false,
+  qaRemarks = "",
+  onQaRemarksChange,
+}: Props) => {
+  const rows = value.length > 0 ? value : [createEmptyLotDetailRow()];
+  const sum = sumLotDetailQuantities(rows);
+  const limit = Number(quantityPerPremix) || 0;
+  const overLimit = limit > 0 && sum > limit + 1e-9;
+  const sumError = fieldErrors.sum;
+  const safeLotOptions = Array.isArray(lotOptions) ? lotOptions : [];
+
+  const selectedLots = useMemo(
+    () => new Set(rows.map((r) => String(r.lotId ?? "").trim()).filter(Boolean)),
+    [rows],
+  );
+
+  const updateRow = (index: number, patch: Partial<LotDetailFormRow>) => {
+    const next = rows.map((row, i) => (i === index ? { ...row, ...patch } : row));
+    onChange(next);
+  };
+
+  const addRow = () => {
+    if (disabled) return;
+    onChange([...rows, createEmptyLotDetailRow()]);
+  };
+
+  const removeRow = (index: number) => {
+    if (disabled) return;
+    if (rows.length <= 1) {
+      onChange([createEmptyLotDetailRow()]);
+      return;
+    }
+    onChange(rows.filter((_, i) => i !== index));
+  };
+
+  return (
+    <Box sx={{ mb: 2 }}>
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+          mb: 1,
+        }}
+      >
+        <Typography sx={{ fontSize: "0.82rem", fontWeight: 700 }}>Lot Details</Typography>
+        <Button
+          size="small"
+          startIcon={<AddRoundedIcon sx={{ fontSize: 16 }} />}
+          onClick={addRow}
+          disabled={disabled || safeLotOptions.length === 0}
+          sx={{ textTransform: "none", fontSize: "0.72rem", fontWeight: 700 }}
+        >
+          Add lot
+        </Button>
+      </Box>
+
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 1.25,
+          border: "1px solid",
+          borderColor: overLimit || sumError ? "error.main" : "divider",
+          borderRadius: 1,
+          p: 1.25,
+        }}
+      >
+        {rows.map((row, index) => {
+          const options = safeLotOptions
+            .map((lotId) => String(lotId ?? "").trim())
+            .filter(Boolean)
+            .filter((lotId) => lotId === row.lotId || !selectedLots.has(lotId))
+            .map((lotId) => ({ value: lotId, label: lotId }));
+
+          return (
+            <Box
+              key={`lot-row-${index}`}
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr auto" },
+                gap: 1.25,
+                alignItems: "start",
+              }}
+            >
+              <Box data-rmp-field={`lotDetails.${index}.lotId`}>
+                <CasePrepSelect
+                  label="Lot ID"
+                  value={row.lotId}
+                  placeholder="Select lot"
+                  options={options}
+                  disabled={disabled}
+                  width="100%"
+                  theme={theme}
+                  required
+                  error={Boolean(fieldErrors[`${index}.lotId`])}
+                  helperText={fieldErrors[`${index}.lotId`] ?? null}
+                  onChange={(v) => updateRow(index, { lotId: v })}
+                />
+              </Box>
+              <Box data-rmp-field={`lotDetails.${index}.quantity`}>
+                <CasePrepTextField
+                  label="Quantity"
+                  value={row.quantity}
+                  disabled={disabled}
+                  required
+                  error={Boolean(fieldErrors[`${index}.quantity`])}
+                  helperText={fieldErrors[`${index}.quantity`] ?? null}
+                  width="100%"
+                  theme={theme}
+                  onChange={(v) => {
+                    const next = sanitizeMasterDataDecimalInput(v);
+                    if (next === null) return;
+                    updateRow(index, { quantity: next });
+                  }}
+                />
+              </Box>
+              <IconButton
+                size="small"
+                onClick={() => removeRow(index)}
+                disabled={disabled}
+                aria-label="Remove lot row"
+                sx={{ mt: { md: 2.2 } }}
+              >
+                <DeleteOutlineRoundedIcon fontSize="small" />
+              </IconButton>
+            </Box>
+          );
+        })}
+
+        <Typography
+          sx={{
+            fontSize: "0.72rem",
+            fontWeight: 600,
+            color: overLimit || sumError ? "error.main" : "text.secondary",
+          }}
+        >
+          Total: {sum}
+          {limit > 0 ? ` / ${limit}` : ""}
+          {limit > 0 ? " (quantity per premix)" : ""}
+        </Typography>
+        {(sumError || (overLimit && !sumError)) && (
+          <Typography sx={{ fontSize: "0.7rem", color: "error.main" }}>
+            {sumError ||
+              `Total lot quantity (${sum}) exceeds quantity per premix (${limit}).`}
+          </Typography>
+        )}
+      </Box>
+      {showQaRemarks ? (
+        <Box sx={{ mt: 1.25 }} data-rmp-field="lotDetailsQaRemarks">
+          <CasePrepTextField
+            label="QA Remarks"
+            value={qaRemarks}
+            disabled={disabled}
+            width="100%"
+            theme={theme}
+            onChange={(v) => onQaRemarksChange?.(v)}
+          />
+        </Box>
+      ) : null}
+    </Box>
+  );
+};
+
+export default LotDetailsSection;

@@ -1,0 +1,746 @@
+import { STRINGS } from "../../../app/config/strings";
+import {
+  getBemMotorIdsFromSheet,
+  type IdentificationSheet,
+} from "../../../data/models/admin/BatchManagement/BatchManagementModel";
+import {
+  normalizeBatchTypeCode,
+  normalizeSubdepartmentBatchStatus,
+} from "../../../data/models/user/SubdepartmentBatchModel";
+import { OPERATION_STATUS } from "../../operationStatus";
+import {
+  buildMotorNavGateHelpers,
+  isMotorEnabledForWorkflow,
+  isMotorEnabledForWorkflowWithBatch,
+  type BatchStageContext,
+  type PreviousStageApprovedUnits,
+} from "../previousStageApproval";
+import { SUB_DEPT } from "../../../utils/batchStageUtils";
+import { mapApprovedMotorsToOptions as mapTrimmingApprovedMotorsToOptions } from "../manufacturing/trimmingFlowConfig";
+import {
+  isQcExperimentalSubBatch as isStfExperimentalSubBatch,
+  isQcMainBatch as isStfMainMotorBatch,
+  isQcQualificationSubBatch as isStfQualificationSubBatch,
+  isQcSubscaleBatch as isStfSubscaleBatch,
+  normalizeQcSubBatchType as normalizeStfSubBatchType,
+  resolveQcWorkingBatchType as resolveStfWorkingBatchType,
+  resolveQcWorkingSubBatchType as resolveStfWorkingSubBatchType,
+} from "./qcBatchType";
+
+export type STFBatch = {
+  id: number | string;
+  batchId: string;
+  lotId: string;
+  motorId: string;
+  motorIds?: string[];
+  bemMotorId?: string | string[] | null;
+  bemMotorIds?: string[];
+  motorType: string;
+  motorStage?: string | number;
+  batchType?: string | null;
+  subBatchType?: string | null;
+  projectId?: string;
+  projectName?: string;
+  numberOfMotors?: number;
+  priority: string;
+  assignedTo: { fullName: string } | null;
+  createdOn: string;
+  stfStatus: string;
+  formId?: string | null;
+  subType?: StfSubType | null;
+  motorIdNo?: string | null;
+  rejectionReason?: string | null;
+};
+
+export type StfMotorTypeOption = {
+  value: StfSubType;
+  label: string;
+};
+
+export type StfMotorOption = { value: string; label: string; disabled?: boolean };
+
+export type StfAddedMotor = { motorId: string; subType: StfSubType };
+
+export {
+  isStfExperimentalSubBatch,
+  isStfMainMotorBatch,
+  isStfQualificationSubBatch,
+  isStfSubscaleBatch,
+  normalizeStfSubBatchType,
+  resolveStfWorkingBatchType,
+  resolveStfWorkingSubBatchType,
+};
+
+/**
+ * ACEM: seed batch-linked main motors for Main batches and Subscale Qualification.
+ * Subscale Experimental is BEM-only. Missing subBatchType on SUBSCALE is treated like
+ * Qualification when the list/details still carry motorIds (common API shape).
+ */
+export const shouldSeedStfMainMotors = (
+  batchType?: string | null,
+  subBatchType?: string | null,
+): boolean => {
+  if (isStfMainMotorBatch(batchType)) return true;
+  if (!isStfSubscaleBatch(batchType)) return false;
+  if (isStfExperimentalSubBatch(subBatchType)) return false;
+  return (
+    isStfQualificationSubBatch(subBatchType) || !normalizeStfSubBatchType(subBatchType)
+  );
+};
+
+/**
+ * ACEM: BEM No. selection for Main, Subscale Qualification, and Subscale Experimental.
+ */
+export const shouldShowStfBemMotorSelection = (
+  batchType?: string | null,
+  subBatchType?: string | null,
+): boolean => {
+  if (isStfMainMotorBatch(batchType)) return true;
+  if (!isStfSubscaleBatch(batchType)) return false;
+  return (
+    isStfQualificationSubBatch(subBatchType) ||
+    isStfExperimentalSubBatch(subBatchType) ||
+    !normalizeStfSubBatchType(subBatchType)
+  );
+};
+
+/** Motors linked to a Main-scale / Qualification batch (from batch details / list row). */
+export const resolveStfBatchMotorEntries = (
+  batch?: {
+    motorId?: string | null;
+    motorIds?: Array<string | number> | null;
+  } | null,
+  batchDetails?: {
+    motorId?: string | null;
+    motorIds?: Array<string | number> | null;
+  } | null,
+): StfAddedMotor[] => {
+  const collectIds = (source: unknown): string[] => {
+    if (!source || typeof source !== "object") return [];
+    const row = source as Record<string, unknown>;
+    const ids: string[] = [];
+    const push = (value: unknown) => {
+      const normalized = String(value ?? "").trim();
+      if (normalized) ids.push(normalized);
+    };
+
+    if (Array.isArray(row.motorIds)) {
+      row.motorIds.forEach((value) => push(value));
+    }
+
+    if (row.motorId != null) {
+      String(row.motorId)
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .forEach((id) => push(id));
+    }
+
+    return ids.filter((id, index, arr) => arr.indexOf(id) === index);
+  };
+
+  const motorIds = collectIds(batchDetails ?? null);
+  const fallbackIds = motorIds.length > 0 ? motorIds : collectIds(batch ?? null);
+  if (fallbackIds.length === 0) return [];
+
+  return fallbackIds.map((motorId) => ({ motorId, subType: "MAIN_MOTOR" as const }));
+};
+
+export const STF_MOTOR_TYPE_OPTIONS: StfMotorTypeOption[] = [
+  { value: "BEM", label: "BEM" },
+  { value: "MAIN_MOTOR", label: "Main Motor" },
+];
+
+export const STF_FLOW_LABELS = {
+  motorType: "Motor Type",
+  motorTypePlaceholder: "Select motor type",
+  motorId: "Motor ID",
+  motorIdPlaceholder: "Select motor",
+  bemNo: "BEM No.",
+  bemNoPlaceholder: "Select BEM number",
+  motorCount: "No. of motors",
+  motorCountPlaceholder: "Select count",
+  loadForm: "Load Form",
+  addMotors: "Add Motor",
+  addBem: "Add Motor",
+  approvedMotorsLoading: "Loading approved motors...",
+  setupHint:
+    "Main and BEM motors from this batch are listed below. Open a tab to fill static testing details.",
+  setupHintMainMotor: "Select approved motor ID(s), then load or add main motors.",
+  setupHintMainMotorLoaded: "Select more main motor IDs below to add additional motors.",
+  setupHintBem: "Batch BEM motors are listed in navigation. Use Add Motor for any extra BEM numbers.",
+  setupHintBemLoaded: "Select another BEM number to add more motors.",
+  setupHintBemEmpty: "No BEM motors found on this batch identification sheet.",
+  motorNavTitle: "Motor navigation",
+  motorNavHint: "Switch between main motors and BEM motors to fill static testing details.",
+  motorCardTitle: "Motor",
+  bemCardTitle: "BEM",
+  navBack: "Back",
+  navNext: "Next",
+};
+
+export const mergeStfMockBatches = (apiBatches: STFBatch[]): STFBatch[] => apiBatches;
+
+export const resolveBatchProjectId = (batch?: STFBatch | null) =>
+  String(batch?.projectId ?? batch?.projectName ?? "").trim();
+
+export const resolveBatchMotorStage = (batch?: STFBatch | null) => {
+  const stage = batch?.motorStage ?? batch?.motorType;
+  if (stage == null || stage === "") return "";
+  return String(stage).trim();
+};
+
+export const resolveStfMotorOptions = (batch?: STFBatch | null): StfMotorOption[] => {
+  const ids = Array.isArray(batch?.motorIds)
+    ? batch.motorIds.map((id) => String(id).trim()).filter(Boolean)
+    : [];
+
+  if (ids.length > 0) {
+    return ids.map((value) => ({ value, label: value }));
+  }
+
+  const singleId = String(batch?.motorId ?? "").trim();
+  if (!singleId) return [];
+
+  const parsed = singleId
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  if (parsed.length > 1) {
+    return parsed.map((value) => ({ value, label: value }));
+  }
+
+  return [{ value: singleId, label: singleId }];
+};
+
+/** Resolve BEM motor dropdown options from batch details / identification sheet metadata. */
+export const resolveBemMotorOptionsFromBatchDetails = (
+  batchDetails?: {
+    identificationSheet?: IdentificationSheet | null;
+    bemMotors?: unknown;
+    bemMotorIds?: unknown;
+    metadata?: unknown;
+  } | null,
+): StfMotorOption[] => {
+  if (!batchDetails) return [];
+
+  const ids = new Set<string>();
+  const push = (value: unknown) => {
+    if (value == null) return;
+    if (typeof value === "string" || typeof value === "number") {
+      const normalized = String(value).trim();
+      if (normalized) ids.add(normalized);
+      return;
+    }
+    if (typeof value === "object" && !Array.isArray(value)) {
+      const row = value as Record<string, unknown>;
+      // Subscale identification-sheet metadata uses bemNo as the BEM motor id (legacy: bemMouldNo).
+      const id = String(
+        row.bemNo ?? row.bemMouldNo ?? row.bemMotorNo ?? row.motorId ?? row.motorCode ?? "",
+      ).trim();
+      if (id) ids.add(id);
+    }
+  };
+
+  const pushFromMeta = (meta: Record<string, unknown> | null | undefined) => {
+    if (!meta) return;
+    if (Array.isArray(meta.bemMotors)) meta.bemMotors.forEach(push);
+    if (Array.isArray(meta.bemMotorIds)) meta.bemMotorIds.forEach(push);
+
+    const subScale =
+      (meta.subScale && typeof meta.subScale === "object"
+        ? (meta.subScale as Record<string, unknown>)
+        : null) ??
+      (meta.subscale && typeof meta.subscale === "object"
+        ? (meta.subscale as Record<string, unknown>)
+        : null);
+    if (!subScale) return;
+    if (Array.isArray(subScale.bemMotors)) subScale.bemMotors.forEach(push);
+    if (Array.isArray(subScale.bemMotorIds)) subScale.bemMotorIds.forEach(push);
+  };
+
+  getBemMotorIdsFromSheet(batchDetails.identificationSheet).forEach((id) => ids.add(id));
+
+  // Also read raw sheet metadata in case subscale was not flattened into metadata.bemMotors.
+  const sheetMeta =
+    batchDetails.identificationSheet?.metadata &&
+    typeof batchDetails.identificationSheet.metadata === "object"
+      ? (batchDetails.identificationSheet.metadata as Record<string, unknown>)
+      : null;
+  pushFromMeta(sheetMeta);
+
+  if (Array.isArray(batchDetails.bemMotors)) batchDetails.bemMotors.forEach(push);
+  if (Array.isArray(batchDetails.bemMotorIds)) batchDetails.bemMotorIds.forEach(push);
+
+  const meta =
+    batchDetails.metadata && typeof batchDetails.metadata === "object"
+      ? (batchDetails.metadata as Record<string, unknown>)
+      : null;
+  pushFromMeta(meta);
+
+  return Array.from(ids).map((value) => ({ value, label: value }));
+};
+
+/**
+ * ACEM: seed batch-linked BEM motors into navigation (same flow as main motors).
+ * IDs come from list `bemMotorIds` and/or batch-details identification sheet metadata.
+ */
+export const resolveStfBatchBemMotorEntries = (
+  batch?: {
+    bemMotorId?: string | string[] | null;
+    bemMotorIds?: Array<string | number> | null;
+    bemMotors?: unknown;
+  } | null,
+  batchDetails?: {
+    identificationSheet?: IdentificationSheet | null;
+    bemMotors?: unknown;
+    bemMotorIds?: unknown;
+    metadata?: unknown;
+  } | null,
+): StfAddedMotor[] => {
+  const fromDetails = resolveBemMotorOptionsFromBatchDetails({
+    identificationSheet: batchDetails?.identificationSheet ?? null,
+    bemMotors: batchDetails?.bemMotors ?? batch?.bemMotors,
+    bemMotorIds: batchDetails?.bemMotorIds ?? batch?.bemMotorIds,
+    metadata: batchDetails?.metadata,
+  });
+
+  if (fromDetails.length > 0) {
+    return fromDetails.map((option) => ({
+      motorId: option.value,
+      subType: "BEM" as const,
+    }));
+  }
+
+  const listIds: string[] = [];
+  const pushList = (value: unknown) => {
+    const normalized = String(value ?? "").trim();
+    if (normalized) listIds.push(normalized);
+  };
+
+  if (Array.isArray(batch?.bemMotorIds)) batch.bemMotorIds.forEach(pushList);
+  if (batch?.bemMotorId != null) {
+    if (Array.isArray(batch.bemMotorId)) batch.bemMotorId.forEach(pushList);
+    else
+      String(batch.bemMotorId)
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .forEach(pushList);
+  }
+
+  return listIds
+    .filter((id, index, arr) => arr.indexOf(id) === index)
+    .map((motorId) => ({ motorId, subType: "BEM" as const }));
+};
+
+const STF_UNLOCKED_STATUSES = new Set([
+  "TO_BE_INITIATED",
+  "IN_PROGRESS",
+  "WAITING_FOR_PARTIAL_APPROVAL",
+  "WAITING_FOR_APPROVAL",
+  "APPROVED",
+  "COMPLETELY_APPROVED",
+  "REJECTED",
+]);
+
+const isStfUnlockedMotorStatus = (status: unknown): boolean => {
+  const upper = String(status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+  if (!upper || upper === "YET_TO_START") return false;
+  return STF_UNLOCKED_STATUSES.has(upper);
+};
+
+/**
+ * Prefer unlocked STF stageProgress motorStatuses (TO_BE_INITIATED+) when present.
+ * Falls back to ID-sheet motorIds / bemMotorIds / metadata.subScale.bemMotors.
+ */
+export const resolveStfUnlockedMotorsFromStageProgress = (
+  stageProgress?: unknown,
+): StfAddedMotor[] => {
+  if (!Array.isArray(stageProgress)) return [];
+  const stfStage = stageProgress.find((stage) => {
+    if (!stage || typeof stage !== "object") return false;
+    const row = stage as Record<string, unknown>;
+    if (Number(row.subDepartmentId) === SUB_DEPT.STF) return true;
+    const name = String(row.subDepartmentName ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+    return name === "statictestfacility" || name === "statictesting";
+  }) as { motorStatuses?: unknown } | undefined;
+
+  const rows = Array.isArray(stfStage?.motorStatuses) ? stfStage!.motorStatuses : [];
+  const seen = new Set<string>();
+  const motors: StfAddedMotor[] = [];
+  rows.forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const row = raw as Record<string, unknown>;
+    const motorId = String(row.motorId ?? "").trim();
+    if (!motorId || seen.has(motorId)) return;
+    if (!isStfUnlockedMotorStatus(row.motorSubmissionStatus ?? row.status)) return;
+    seen.add(motorId);
+    const subType =
+      String(row.subType ?? "")
+        .trim()
+        .toUpperCase() === "MAIN_MOTOR"
+        ? ("MAIN_MOTOR" as const)
+        : ("BEM" as const);
+    motors.push({ motorId, subType });
+  });
+  return motors;
+};
+
+/** Seed main motors and/or BEM motors for ACEM navigation from batch + details. */
+export const resolveStfSeededNavigationMotors = (
+  batch?: STFBatch | null,
+  batchDetails?: {
+    batchType?: string | null;
+    subBatchType?: string | null;
+    motorId?: string | null;
+    motorIds?: Array<string | number> | null;
+    identificationSheet?: IdentificationSheet | null;
+    bemMotors?: unknown;
+    bemMotorIds?: unknown;
+    metadata?: unknown;
+    stageProgress?: unknown;
+  } | null,
+): StfAddedMotor[] => {
+  const stageProgress =
+    batchDetails?.stageProgress ?? (batch as { stageProgress?: unknown } | null)?.stageProgress;
+  const fromStage = resolveStfUnlockedMotorsFromStageProgress(stageProgress);
+  if (fromStage.length > 0) {
+    return fromStage;
+  }
+
+  const batchType = batchDetails?.batchType ?? batch?.batchType;
+  const subBatchType = batchDetails?.subBatchType ?? batch?.subBatchType;
+  const main = shouldSeedStfMainMotors(batchType, subBatchType)
+    ? resolveStfBatchMotorEntries(batch, batchDetails)
+    : [];
+  const bem = shouldShowStfBemMotorSelection(batchType, subBatchType)
+    ? resolveStfBatchBemMotorEntries(batch, batchDetails)
+    : [];
+
+  const seen = new Set<string>();
+  const merged: StfAddedMotor[] = [];
+  for (const entry of [...main, ...bem]) {
+    const id = String(entry.motorId ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(entry);
+  }
+  return merged;
+};
+
+export const mapApprovedMotorsToOptions = mapTrimmingApprovedMotorsToOptions;
+
+export const mergeStfMotorOptions = (
+  approved: StfMotorOption[],
+  batch: StfMotorOption[],
+): StfMotorOption[] => {
+  const seen = new Set<string>();
+  const merged: StfMotorOption[] = [];
+
+  for (const option of [...approved, ...batch]) {
+    const value = String(option.value ?? "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    merged.push({ value, label: option.label || value });
+  }
+
+  return merged;
+};
+
+export const getStfMotorCountOptions = (maxCount: number) =>
+  Array.from({ length: Math.max(maxCount, 0) }, (_, idx) => ({
+    value: String(idx + 1),
+    label: String(idx + 1),
+  }));
+
+export const getSelectedStfDraftMotorIds = (count: number, draftMotorIds: string[]): string[] =>
+  Array.from({ length: count }, (_, idx) => String(draftMotorIds[idx] ?? "").trim()).filter(
+    Boolean,
+  );
+
+export const resolveEffectiveStfMotorCount = (
+  motorCount: number | "",
+  draftMotorIds: string[],
+): number => {
+  const count = motorCount === "" ? 0 : Number(motorCount);
+  if (count > 0) return count;
+  return draftMotorIds.some((id) => String(id ?? "").trim().length > 0) ? 1 : 0;
+};
+
+export const resolveStfMotorCountLimit = ({
+  availableMotorOptions,
+  batchNumberOfMotors,
+}: {
+  availableMotorOptions: StfMotorOption[];
+  batchNumberOfMotors?: number;
+}) => {
+  const optionLimit = availableMotorOptions.length;
+  const batchLimit = Number(batchNumberOfMotors ?? 0);
+  if (batchLimit > 0 && optionLimit > 0) return Math.min(batchLimit, optionLimit);
+  if (batchLimit > 0) return batchLimit;
+  return Math.max(optionLimit, 1);
+};
+
+export const hasStfMotorsOfSubType = (addedMotors: StfAddedMotor[], subType: StfSubType) =>
+  addedMotors.some((motor) => motor.subType === subType);
+
+export const canLoadStfMainMotorForm = ({
+  motorCount,
+  draftMotorIds,
+  usedMotorIds,
+  hasMainMotors,
+  availableMotorOptions,
+  maxMotorCount,
+}: {
+  motorCount: number | "";
+  draftMotorIds: string[];
+  usedMotorIds: string[];
+  hasMainMotors: boolean;
+  availableMotorOptions: StfMotorOption[];
+  maxMotorCount: number;
+}) => {
+  if (hasMainMotors) return false;
+  if (availableMotorOptions.length === 0 || maxMotorCount <= 0) return false;
+
+  const count = resolveEffectiveStfMotorCount(motorCount, draftMotorIds);
+  if (count <= 0 || count > maxMotorCount) return false;
+
+  const selectedIds = getSelectedStfDraftMotorIds(count, draftMotorIds);
+  if (selectedIds.length !== count) return false;
+  if (new Set(selectedIds).size !== selectedIds.length) return false;
+  return !selectedIds.some((id) => usedMotorIds.includes(id));
+};
+
+export const canAddStfMainMotors = ({
+  motorCount,
+  draftMotorIds,
+  usedMotorIds,
+  usedMainMotorIds,
+  hasMainMotors,
+  availableMotorOptions,
+  maxMotorCount,
+}: {
+  motorCount: number | "";
+  draftMotorIds: string[];
+  usedMotorIds: string[];
+  usedMainMotorIds: string[];
+  hasMainMotors: boolean;
+  availableMotorOptions: StfMotorOption[];
+  maxMotorCount: number;
+}) => {
+  if (!hasMainMotors) return false;
+  if (availableMotorOptions.length === 0 || maxMotorCount <= 0) return false;
+
+  const count = resolveEffectiveStfMotorCount(motorCount, draftMotorIds);
+  if (count <= 0) return false;
+
+  const selectedIds = getSelectedStfDraftMotorIds(count, draftMotorIds);
+  if (selectedIds.length !== count) return false;
+  if (new Set(selectedIds).size !== selectedIds.length) return false;
+
+  const newIds = selectedIds.filter((id) => !usedMotorIds.includes(id));
+  return newIds.length > 0 && usedMainMotorIds.length + newIds.length <= maxMotorCount;
+};
+
+/** @deprecated ACEM BEM flow uses Add Motor for first and subsequent motors. */
+export const canLoadStfBemForm = (bemNo: string, usedMotorIds: string[], _hasBemMotors?: boolean) => {
+  const trimmed = String(bemNo ?? "").trim();
+  if (!trimmed) return false;
+  return !usedMotorIds.includes(trimmed);
+};
+
+/** True when a BEM number is selected and not already in motor navigation. */
+export const canAddStfBemMotor = (
+  bemNo: string,
+  usedMotorIds: string[],
+  _hasBemMotors?: boolean,
+) => {
+  const trimmed = String(bemNo ?? "").trim();
+  if (!trimmed) return false;
+  return !usedMotorIds.includes(trimmed);
+};
+
+/** @deprecated Use canLoadStfMainMotorForm / canLoadStfBemForm */
+export const canLoadStfForm = (subType: string, motorIdNo: string) => {
+  if (!String(subType ?? "").trim()) return false;
+  if (mapStfSubType(subType) === "MAIN_MOTOR") {
+    return String(motorIdNo ?? "").trim().length > 0;
+  }
+  return true;
+};
+
+export interface BemMotor {
+  motorId: string;
+  bemNo?: string;
+  motorCode: string;
+  stfTestNo?: string;
+  status: string;
+  createdBy: string;
+  createdOn: string;
+  formId?: string | null;
+  subType?: StfSubType | null;
+  rejectionReason?: string | null;
+}
+
+const BEM_STATUS_TAB_ORDER = [
+  OPERATION_STATUS.TO_BE_INITIATED,
+  OPERATION_STATUS.IN_PROGRESS,
+  OPERATION_STATUS.WAITING_FOR_PARTIAL_APPROVAL,
+  OPERATION_STATUS.WAITING_FOR_APPROVAL,
+  OPERATION_STATUS.WAITING_FOR_APPROVAL,
+  OPERATION_STATUS.APPROVED,
+  OPERATION_STATUS.COMPLETELY_APPROVED,
+  OPERATION_STATUS.REJECTED,
+] as const;
+
+/**
+ * Map `/stf/bem-motor/list` statusCounts (camelCase) onto UI status labels.
+ * Tabs are derived only from keys present in the API response.
+ */
+export const mapBemMotorStatusCountsForUi = (
+  server: Record<string, number> | undefined,
+  totalRecords: number,
+): Record<string, number> => {
+  const allKey = STRINGS.USER_BATCH_LIST.FILTER_ALL;
+  const byLabel: Record<string, number> = {};
+
+  Object.entries(server ?? {}).forEach(([key, value]) => {
+    if (typeof value !== "number") return;
+    const label = String(normalizeSubdepartmentBatchStatus(key));
+    byLabel[label] = (byLabel[label] ?? 0) + value;
+  });
+
+  const sum = Object.values(byLabel).reduce((acc, value) => acc + value, 0);
+  return {
+    ...byLabel,
+    [allKey]: sum > 0 ? sum : totalRecords,
+  };
+};
+
+/** Status filter tabs: All + statuses returned by list API statusCounts. */
+export const resolveBemMotorStatusTabs = (
+  statusCounts: Record<string, number> | undefined,
+): string[] => {
+  const allKey = STRINGS.USER_BATCH_LIST.FILTER_ALL;
+  const countKeys = Object.keys(statusCounts ?? {}).filter((key) => key !== allKey);
+  if (!countKeys.length) return [allKey];
+
+  const ordered = BEM_STATUS_TAB_ORDER.filter((status) => countKeys.includes(status));
+  const extras = countKeys.filter(
+    (key) => !BEM_STATUS_TAB_ORDER.includes(key as (typeof BEM_STATUS_TAB_ORDER)[number]),
+  );
+  return [allKey, ...ordered, ...extras];
+};
+
+export type StfNavigationMotor = {
+  motorId?: string;
+  subType?: StfSubType | string | null;
+};
+
+export const isStfMotorEnabledForWorkflow = (
+  motorId: string,
+  motorCards: StfNavigationMotor[],
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus: (motorId: string) => string | undefined | null,
+  options: {
+    facilityType: "ACEM" | "OTHER_BEM";
+    subType?: StfSubType | string | null;
+    batchContext?: BatchStageContext | null;
+    subDepartmentId?: number | null;
+  },
+): boolean => {
+  if (options.facilityType === "OTHER_BEM") return true;
+  if (String(options.subType ?? "").toUpperCase() === "BEM") return true;
+
+  const mainMotorIds = motorCards
+    .filter((entry) => String(entry.subType ?? "").toUpperCase() !== "BEM")
+    .map((entry) => String(entry.motorId ?? "").trim())
+    .filter(Boolean);
+
+  return isMotorEnabledForWorkflowWithBatch(
+    options.batchContext,
+    options.subDepartmentId ?? SUB_DEPT.STF,
+    motorId,
+    mainMotorIds,
+    gate,
+    getStatus,
+  );
+};
+
+export const buildStfMotorNavGateHelpers = (
+  motorCards: StfNavigationMotor[],
+  previousStageGate: PreviousStageApprovedUnits | null | undefined,
+  resolveMotorStatus: (motorId: string) => string | undefined | null,
+  facilityType: "ACEM" | "OTHER_BEM",
+  messages: {
+    previousStage?: string;
+    notYetUnlocked?: string;
+    sequential?: string;
+  } = {},
+  batchContext?: BatchStageContext | null,
+  subDepartmentId?: number | null,
+) => {
+  const mainMotorCards = motorCards.filter(
+    (entry) => String(entry.subType ?? "").toUpperCase() !== "BEM",
+  );
+  const mainMotorGate = buildMotorNavGateHelpers(
+    mainMotorCards,
+    previousStageGate,
+    resolveMotorStatus,
+    messages,
+    batchContext,
+    subDepartmentId ?? SUB_DEPT.STF,
+  );
+
+  const resolveMainMotorIndex = (index: number) => {
+    const entry = motorCards[index];
+    if (!entry) return -1;
+    return mainMotorCards.findIndex(
+      (mainEntry) => String(mainEntry.motorId ?? "").trim() === String(entry.motorId ?? "").trim(),
+    );
+  };
+
+  return {
+    isStfMotorTabEnabled: (index: number) => {
+      const entry = motorCards[index];
+      if (!entry) return false;
+      if (facilityType === "OTHER_BEM") return true;
+      if (String(entry.subType ?? "").toUpperCase() === "BEM") return true;
+      const mainIndex = resolveMainMotorIndex(index);
+      if (mainIndex < 0) return false;
+      return mainMotorGate.isMotorTabEnabled(mainIndex);
+    },
+    getStfMotorTabTooltip: (index: number) => {
+      const entry = motorCards[index];
+      if (!entry) return undefined;
+      if (facilityType === "OTHER_BEM") return undefined;
+      if (String(entry.subType ?? "").toUpperCase() === "BEM") return undefined;
+      const mainIndex = resolveMainMotorIndex(index);
+      if (mainIndex < 0) return undefined;
+      return mainMotorGate.getMotorTabTooltip(mainIndex);
+    },
+    isStfMotorWorkflowEnabled: (
+      motorId: string,
+      subType?: StfSubType | string | null,
+    ) =>
+      isStfMotorEnabledForWorkflow(motorId, motorCards, previousStageGate, resolveMotorStatus, {
+        facilityType,
+        subType,
+      }),
+  };
+};
+
+export type StfSubType = "BEM" | "MAIN_MOTOR";
+
+export const mapStfSubType = (subType?: string | null): StfSubType => {
+  const normalized = String(subType ?? "").toUpperCase();
+  return normalized === "MAIN_MOTOR" ? "MAIN_MOTOR" : "BEM";
+};

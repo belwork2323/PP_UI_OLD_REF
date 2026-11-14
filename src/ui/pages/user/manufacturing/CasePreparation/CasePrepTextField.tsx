@@ -1,0 +1,91 @@
+import { Box, TextField, Typography } from "@mui/material";
+import { WorkflowReadOnlyText } from "../../../../components/common/WorkflowReadOnlyText";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+
+type CasePrepTextFieldProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  placeholder?: string;
+  width?: number | string;
+  theme: any;
+  error?: boolean;
+  helperText?: string | null;
+  required?: boolean;
+  /** Validation focus target (`data-cp-field`). */
+  dataCpField?: string;
+  /** Casting & Curing validation focus target (`data-cc-field`). */
+  dataCcField?: string;
+};
+
+const CasePrepTextField = ({
+  label,
+  value,
+  onChange,
+  disabled = false,
+  readOnly = false,
+  placeholder = "",
+  width = 220,
+  theme,
+  error,
+  helperText,
+  required = false,
+  dataCpField,
+  dataCcField,
+}: CasePrepTextFieldProps) => {
+  const flowBar = theme?.manufacturing?.casePreparation?.flowBar ?? {};
+  const palette = theme?.palette ?? {};
+  const hasValue = String(value ?? "").trim().length > 0;
+
+  return (
+    <Box
+      sx={flowBar.selectField?.(width)}
+      {...(dataCpField ? { "data-cp-field": dataCpField } : {})}
+      {...(dataCcField ? { "data-cc-field": dataCcField } : {})}
+    >
+      <Typography component="label" sx={{ ...flowBar.selectLabel, fontWeight: 500 }}>
+        {required ? (
+          <FieldLabelWithAsterisk label={label} required />
+        ) : (
+          <Typography variant="body2" component="span" sx={{ mb: 0.5, fontWeight: 500 }}>
+            {label}
+          </Typography>
+        )}
+      </Typography>
+      {readOnly ? (
+        <WorkflowReadOnlyText value={value} sx={{ fontSize: "0.82rem", py: 0.75 }} />
+      ) : (
+        <TextField
+          fullWidth
+          size="small"
+          variant="outlined"
+          value={value}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+          error={Boolean(error)}
+          helperText={helperText ?? undefined}
+          sx={{
+            ...flowBar.selectInput?.(hasValue),
+            "& .MuiInputBase-input": {
+              fontWeight: hasValue ? 600 : 500,
+              color: hasValue ? palette.text : palette.textSub,
+              py: 1,
+              fontSize: "0.82rem",
+            },
+            "& .MuiInputBase-input::placeholder": {
+              color: palette.textSub,
+              opacity: 1,
+              fontWeight: 500,
+            },
+          }}
+          required={required}
+        />
+      )}
+    </Box>
+  );
+};
+
+export default CasePrepTextField;

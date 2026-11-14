@@ -1,0 +1,1481 @@
+import { createInitialValues, hydrateValuesFromProcess } from "@/data/models/shared/sectionFormTypes";
+import {
+  RMP_SCHEMA_TYPE,
+  RMP_SCHEMA_VERSION,
+  gradeCodeFromApProcessType,
+  type LotDetailDto,
+  type PreparationProcessEntry,
+  type SchemaProcessSubmission,
+} from "../../../data/models/user/rmp/rmpProcessTypes";
+import { toSectionSubmissions } from "@/data/models/shared/sectionFormTypes";
+import type { SchemaDocumentV2, SchemaFormValues, SchemaSectionSubmission } from "@/data/models/shared/sectionFormTypes";
+import {
+  normalizeProcessSubmissionFromApi,
+  normalizeSectionsForApiPayload,
+  serializeProcessSubmissionForApi,
+} from "../../../data/models/user/rawMaterialPreparationApiMapper";
+import {
+  createEmptyWeightmentDetail,
+  createEmptyWeightmentSheet,
+  createEmptyWeightmentValidation,
+  mapWeightmentSheetFromApi,
+  resolveWeightmentPremixMeta,
+  type RawMaterialPrepWeightmentSheet,
+} from "../../../data/models/user/RawMaterialPreparationModel";
+import {
+  normalizeSheetMaterialsForWeightmentCompare,
+} from "../../../data/models/user/rawMaterialWeightmentValidation";
+import { formatToIsoDateInput } from "../../../utils/dateUtils";
+import type { MaterialItem } from "../../../data/models/admin/BatchManagement/BatchManagementModel";
+import { operationsController } from "../../../controllers/user/operationsController";
+import {
+  buildMaterialSelectionFromSheetRow,
+  findPrepMaterialByCode,
+  formatRmpMaterialNavLabel,
+  mergeMaterialsLists,
+  type RawMaterialPrepMaterialOption,
+} from "../manufacturing/rawMaterialPrepFlowConfig";
+import { buildProcessFromTypedForm } from "../../../data/models/user/rmp/buildProcessFromTypedForm";
+import { typedProcessToDisplaySections } from "../../../data/models/user/rmp/processFormMapper";
+import type { RawMaterialPrepMaterialProcessSlot } from "../../../data/models/user/RawMaterialPreparationModel";
+import type { QcDivisionEntry } from "./qcDivisionEntryTypes";
+
+const createProcessingEntryId = () =>
+  `qc-div-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+/** Local unwrap — avoid importing qcBatchContext (cycle via QualityControlFormModel). */
+const resolveBatchPayloadRoot = (batchPayload: unknown): Record<string, unknown> | null => {
+  const root =
+    batchPayload && typeof batchPayload === "object" && !Array.isArray(batchPayload)
+      ? (batchPayload as Record<string, unknown>)
+      : null;
+  if (!root) return null;
+  const nested = root.__batchDetails;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>;
+  }
+  return root;
+};
+
+/** Expand flat division-details section rows into schema table/repeat shape (same as RMP). */
+export const normalizeProcessingSectionsForSchema = (
+  schema: SchemaDocumentV2,
+  sections: SchemaSectionSubmission[],
+  context: {
+    materialId: number;
+    materialCode: string;
+    materialName: string;
+    gradeId?: number | null;
+    gradeCode?: string | null;
+  },
+): SchemaSectionSubmission[] =>
+  normalizeProcessSubmissionFromApi(
+    {
+      materialId: context.materialId,
+      materialCode: context.materialCode,
+      materialName: context.materialName,
+      gradeId: context.gradeId ?? null,
+      gradeCode: context.gradeCode ?? null,
+      schemaVersion: schema.schemaVersion || RMP_SCHEMA_VERSION,
+      schemaType: schema.schemaType || RMP_SCHEMA_TYPE,
+      sections,
+    },
+    schema,
+  ).sections;
+
+export type QcProcessingProcessSlot = "solid" | "liquid";
+
+export type QcProcessingMaterialSeed = {
+  premixNo: number;
+  premixDate?: string;
+  materialType?: string;
+  processSlot: QcProcessingProcessSlot;
+  materialId: number;
+  materialCode: string;
+  materialName: string;
+  gradeId: number | null;
+  gradeCode: string | null;
+  /** From material master — retained even when process data is empty. */
+  rmpFormTemplate?: string | null;
+  sections: SchemaSectionSubmission[];
+  /** Typed RMP process (processType + nested blocks). Prefer over sections for UI. */
+  process?: PreparationProcessEntry;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+const pickNumber = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+};
+
+const pickString = (...values: unknown[]): string => {
+  for (const value of values) {
+    const s = String(value ?? "").trim();
+    if (s) return s;
+  }
+  return "";
+};
+
+const normalizeSections = (value: unknown): SchemaSectionSubmission[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      const rec = asRecord(row);
+      if (!rec) return null;
+      const sectionId = pickString(rec.sectionId, rec.section_id);
+      if (!sectionId) return null;
+      const sectionData = Array.isArray(rec.sectionData)
+        ? rec.sectionData
+        : Array.isArray(rec.section_data)
+          ? rec.section_data
+          : [];
+      return { sectionId, sectionData } as SchemaSectionSubmission;
+    })
+    .filter((section): section is SchemaSectionSubmission => Boolean(section));
+};
+
+const normalizeCertificateList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }
+  const single = String(value ?? "").trim();
+  return single ? [single] : [];
+};
+
+const unwrapLotQuantity = (value: unknown): number | null => {
+  if (value == null || value === "") return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Record<string, unknown>;
+    if (obj.parsedValue !== undefined && obj.parsedValue !== null && obj.parsedValue !== "") {
+      const n = Number(obj.parsedValue);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (obj.source !== undefined && obj.source !== null && obj.source !== "") {
+      const n = Number(obj.source);
+      return Number.isFinite(n) ? n : null;
+    }
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const normalizeLotDetails = (value: unknown): LotDetailDto[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      const rec = asRecord(row);
+      if (!rec) return null;
+      const lotId = pickString(rec.lotId, rec.lot_id);
+      const quantity = unwrapLotQuantity(rec.quantity);
+      if (!lotId && quantity == null) return null;
+      return { lotId, quantity } as LotDetailDto;
+    })
+    .filter((row): row is LotDetailDto => Boolean(row));
+};
+
+/** Map RMP API solid/liquid process row → typed PreparationProcessEntry. */
+const processEntryFromApiRecord = (
+  rec: Record<string, unknown>,
+  identity: {
+    materialId: number;
+    materialCode: string;
+    materialName: string;
+    gradeId: number | null;
+    gradeCode: string | null;
+  },
+): PreparationProcessEntry => {
+  const processType = pickString(rec.processType, rec.process_type) || undefined;
+  const derivedGrade =
+    identity.gradeCode ||
+    (processType ? gradeCodeFromApProcessType(processType) : "") ||
+    null;
+  const sections = normalizeSections(rec.sections);
+
+  const lotDetailsQaRemarks = pickString(
+    rec.lotDetailsQaRemarks,
+    rec.lot_details_qa_remarks,
+  );
+  const qaRemarks = pickString(rec.qaRemarks, rec.qa_remarks);
+
+  return {
+    materialId: identity.materialId,
+    materialCode: identity.materialCode,
+    materialName: identity.materialName,
+    gradeId: identity.gradeId,
+    gradeCode: derivedGrade,
+    processType,
+    lotDetails: normalizeLotDetails(rec.lotDetails ?? rec.lot_details),
+    ...(lotDetailsQaRemarks ? { lotDetailsQaRemarks } : {}),
+    ...(qaRemarks ? { qaRemarks } : {}),
+    drying: (asRecord(rec.drying) as PreparationProcessEntry["drying"]) ?? null,
+    sieving: (asRecord(rec.sieving) as PreparationProcessEntry["sieving"]) ?? null,
+    apCoarse: (asRecord(rec.apCoarse ?? rec.ap_coarse) as PreparationProcessEntry["apCoarse"]) ?? null,
+    apFine: (asRecord(rec.apFine ?? rec.ap_fine) as PreparationProcessEntry["apFine"]) ?? null,
+    apUltraFine:
+      (asRecord(rec.apUltraFine ?? rec.ap_ultra_fine) as PreparationProcessEntry["apUltraFine"]) ??
+      null,
+    aluminum: (asRecord(rec.aluminum) as PreparationProcessEntry["aluminum"]) ?? null,
+    doa: (asRecord(rec.doa) as PreparationProcessEntry["doa"]) ?? null,
+    ...(sections.length ? { sections } : {}),
+  };
+};
+
+const sectionsFromProcessingDetail = (detail: Record<string, unknown>): SchemaSectionSubmission[] => {
+  const existing = normalizeSections(detail.sections);
+  if (existing.length) return existing;
+
+  const parameters = asArray(detail.parameters);
+  if (!parameters.length) return [];
+
+  const rawMaterial = pickString(detail.rawMaterial, detail.raw_material, detail.materialCode);
+  const grade = pickString(detail.grade, detail.gradeCode, detail.grade_code);
+  const operation = pickString(detail.operation);
+
+  const rows = parameters.map((param, index) => {
+    const rec = asRecord(param) ?? {};
+    return {
+      SR_NO: index + 1,
+      RAW_MATERIAL: rawMaterial,
+      GRADE: grade,
+      OPERATION: operation,
+      PARAMETER: pickString(rec.parameter, rec.PARAMETER),
+      SPECIFICATION: pickString(rec.specification, rec.SPECIFICATION),
+      ACTUAL_VALUE: pickString(rec.actualValue, rec.ACTUAL_VALUE, rec.result, rec.RESULT),
+      REMARKS: pickString(rec.remarks, rec.REMARKS),
+      QC_CERTIFICATE: normalizeCertificateList(rec.qcCertificate ?? rec.QC_CERTIFICATE).join(", "),
+    };
+  });
+
+  return [
+    {
+      sectionId: "PROCESSING_DETAILS",
+      sectionData: [{ PROCESSING_DETAILS: { rows } }],
+    },
+  ];
+};
+
+const parseProcessMaterials = (
+  premixNo: number,
+  premixDate: string | undefined,
+  materialType: string | undefined,
+  processSlot: QcProcessingProcessSlot,
+  source: unknown,
+): QcProcessingMaterialSeed[] => {
+  const rows: QcProcessingMaterialSeed[] = [];
+  asArray(source).forEach((row, index) => {
+    const rec = asRecord(row);
+    if (!rec) return;
+
+    // New API shape: RMP-style typed process (processType + nested blocks / sections)
+    // Legacy shape: { srNo, rawMaterial, grade, operation, parameters }
+    const rawMaterial = pickString(rec.rawMaterial, rec.raw_material, rec.materialCode, rec.material_code);
+    const hasDomainShape = Boolean(rawMaterial) || Array.isArray(rec.parameters);
+    const hasSections = normalizeSections(rec.sections).length > 0;
+    const hasTypedProcess = Boolean(pickString(rec.processType, rec.process_type));
+    const materialIdEarly = pickNumber(rec.materialId, rec.material_id);
+
+    if (hasDomainShape && !materialIdEarly && !hasSections && !hasTypedProcess) {
+      const materialCode = rawMaterial || `MATERIAL_${index + 1}`;
+      const materialId = pickNumber(rec.materialId, rec.material_id) ?? index + 1;
+      const materialName = pickString(rec.materialName, rec.material_name) || materialCode;
+      const gradeCode = pickString(rec.grade, rec.gradeCode, rec.grade_code) || null;
+      const sections = sectionsFromProcessingDetail(rec);
+      const identity = {
+        materialId,
+        materialCode,
+        materialName,
+        gradeId: null as number | null,
+        gradeCode,
+      };
+      rows.push({
+        premixNo,
+        premixDate,
+        materialType,
+        processSlot,
+        ...identity,
+        sections,
+        process: processEntryFromApiRecord(rec, identity),
+      });
+      return;
+    }
+
+    const materialId = pickNumber(rec.materialId, rec.material_id);
+    const materialCode = pickString(rec.materialCode, rec.material_code, rawMaterial);
+    if (materialId == null || !materialCode) return;
+    const gradeIdRaw = rec.gradeId ?? rec.grade_id;
+    const gradeId =
+      gradeIdRaw == null || gradeIdRaw === ""
+        ? null
+        : Number.isFinite(Number(gradeIdRaw))
+          ? Number(gradeIdRaw)
+          : null;
+    const processType = pickString(rec.processType, rec.process_type);
+    const gradeCodeRaw =
+      pickString(rec.gradeCode, rec.grade_code, rec.grade) ||
+      gradeCodeFromApProcessType(processType) ||
+      null;
+    const materialName = pickString(rec.materialName, rec.material_name) || materialCode;
+    const sections = sectionsFromProcessingDetail(rec);
+    const identity = {
+      materialId,
+      materialCode,
+      materialName,
+      gradeId,
+      gradeCode: gradeCodeRaw,
+    };
+    rows.push({
+      premixNo,
+      premixDate,
+      materialType,
+      processSlot,
+      ...identity,
+      sections,
+      process: processEntryFromApiRecord(rec, identity),
+    });
+  });
+  return rows;
+};
+
+export const getQcProcessingMaterialSchemaCacheKey = (params: {
+  materialId: number;
+  gradeCode?: string | null;
+  processSlot: QcProcessingProcessSlot;
+}) =>
+  `RMP:${params.materialId}:${String(params.gradeCode ?? "").trim() || "NONE"}:${params.processSlot}`;
+
+export const getQcProcessingMaterialDedupKey = (params: {
+  premixNo: number;
+  processSlot: QcProcessingProcessSlot;
+  materialId: number;
+  gradeCode?: string | null;
+}) =>
+  `RAW_MATERIAL:PROCESSING:${params.premixNo}:${params.processSlot}:${params.materialId}:${String(params.gradeCode ?? "").trim() || "NONE"}`;
+
+/** Match RMP / user material nav: `Premix-1 AP - COARSE` when a grade is present. */
+export const getQcProcessingMaterialLabel = (params: {
+  premixNo: number;
+  materialCode: string;
+  gradeCode?: string | null;
+  gradeName?: string | null;
+}) => {
+  const materialPart = formatRmpMaterialNavLabel({
+    materialCode: params.materialCode,
+    gradeCode: params.gradeCode ?? undefined,
+    gradeName: params.gradeName ?? undefined,
+  });
+  const premixNo = Number(params.premixNo);
+  const premixPrefix = Number.isFinite(premixNo) && premixNo > 0 ? `Premix-${premixNo}` : "";
+  if (!premixPrefix) return materialPart || String(params.materialCode ?? "").trim();
+  if (!materialPart) return premixPrefix;
+  return `${premixPrefix} ${materialPart}`;
+};
+
+/** RMP weighment sheet from QC Raw Material Processing division-details autopopulate. */
+export const parseWeightmentSheetFromDivisionDetails = (
+  payload: unknown,
+): RawMaterialPrepWeightmentSheet => {
+  const roots = [
+    asRecord(payload),
+    asRecord(asRecord(payload)?.__manufacturingDivisionData),
+    asRecord(asRecord(payload)?.data),
+    asRecord(asRecord(payload)?.batch),
+    asRecord(asRecord(asRecord(payload)?.batch)?.identificationSheet),
+    asRecord(asRecord(payload)?.identificationSheet),
+  ].filter(Boolean) as Record<string, unknown>[];
+
+  for (const root of roots) {
+    const data = asRecord(root.data) ?? root;
+    const metadata = asRecord(data.metadata);
+    const rmpMeta = asRecord(metadata?.rawMaterialPreparation ?? metadata?.raw_material_preparation);
+    const sheet =
+      data.weightmentSheet ??
+      data.weightment_sheet ??
+      asRecord(data.preparationDetails)?.weightmentSheet ??
+      asRecord(data.preparation_details)?.weightmentSheet ??
+      rmpMeta?.weightmentSheet ??
+      rmpMeta?.weightment_sheet;
+    if (sheet != null && typeof sheet === "object") {
+      return mapWeightmentSheetFromApi(sheet);
+    }
+  }
+
+  return createEmptyWeightmentSheet();
+};
+
+/** Prefer an existing QC sheet; otherwise first non-empty source (autopopulate / batch). */
+export const resolveQcProcessingWeightmentSheet = (
+  existing: RawMaterialPrepWeightmentSheet | null | undefined,
+  ...sources: unknown[]
+): RawMaterialPrepWeightmentSheet => {
+  // Once QC form owns a sheet, keep it so edits / compare flags are not overwritten.
+  if (existing != null) return existing;
+
+  const hasContent = (sheet: RawMaterialPrepWeightmentSheet) =>
+    Boolean(
+      String(sheet.mixerBuildingNumber ?? "").trim() ||
+        (sheet.weightmentDetails?.length ?? 0) > 0,
+    );
+  for (const source of sources) {
+    const sheet = parseWeightmentSheetFromDivisionDetails(source);
+    if (hasContent(sheet)) return sheet;
+  }
+  return createEmptyWeightmentSheet();
+};
+
+/** Filter shared weighment sheet to rows for one material × premix. */
+export const filterWeightmentSheetForMaterial = (
+  sheet: RawMaterialPrepWeightmentSheet,
+  materialCode: string | null | undefined,
+  premixNo?: number | null,
+): RawMaterialPrepWeightmentSheet => {
+  const code = String(materialCode ?? "")
+    .trim()
+    .toUpperCase();
+  if (!code) return sheet;
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  return {
+    ...sheet,
+    weightmentDetails: (sheet.weightmentDetails ?? []).filter((row) => {
+      const scopeCode = String(row.scopeMaterialCode ?? row.materialCode ?? "")
+        .trim()
+        .toUpperCase();
+      if (scopeCode && scopeCode !== code) return false;
+      if (!scopeCode) return true;
+      if (premix == null) return true;
+      const rowPremix =
+        row.premixNo == null || !Number.isFinite(Number(row.premixNo))
+          ? null
+          : Number(row.premixNo);
+      return rowPremix == null || rowPremix === premix;
+    }),
+  };
+};
+
+/** Stamp blank rows with the active material (+ premix) so they stay in scope. */
+export const stampWeightmentRowsForMaterial = (
+  sheet: RawMaterialPrepWeightmentSheet,
+  materialCode: string | null | undefined,
+  materialName?: string | null,
+  premixNo?: number | null,
+): RawMaterialPrepWeightmentSheet => {
+  const code = String(materialCode ?? "").trim();
+  if (!code) return sheet;
+  const name = String(materialName ?? "").trim() || code;
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  return {
+    ...sheet,
+    weightmentDetails: (sheet.weightmentDetails ?? []).map((row) => {
+      const next = { ...row };
+      if (!String(next.scopeMaterialCode ?? "").trim()) {
+        next.scopeMaterialCode = code;
+      }
+      if (!String(next.materialCode ?? "").trim()) {
+        next.materialCode = code;
+      }
+      if (!String(next.materialName ?? "").trim()) {
+        next.materialName = name;
+      }
+      if (premix != null && (next.premixNo == null || !Number.isFinite(Number(next.premixNo)))) {
+        next.premixNo = premix;
+      }
+      return next;
+    }),
+  };
+};
+
+/** Merge a material×premix filtered sheet edit back into the full weighment sheet. */
+export const mergeWeightmentSheetForMaterial = (
+  full: RawMaterialPrepWeightmentSheet,
+  materialCode: string | null | undefined,
+  nextFiltered: RawMaterialPrepWeightmentSheet,
+  premixNo?: number | null,
+): RawMaterialPrepWeightmentSheet => {
+  const code = String(materialCode ?? "")
+    .trim()
+    .toUpperCase();
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  const stamped = stampWeightmentRowsForMaterial(
+    nextFiltered,
+    materialCode,
+    undefined,
+    premix,
+  );
+  const otherRows = (full.weightmentDetails ?? []).filter((row) => {
+    const scopeCode = String(row.scopeMaterialCode ?? row.materialCode ?? "")
+      .trim()
+      .toUpperCase();
+    if (!code) return true;
+    if (scopeCode && scopeCode !== code) return true;
+    if (!scopeCode) return false;
+    if (premix == null) return false;
+    const rowPremix =
+      row.premixNo == null || !Number.isFinite(Number(row.premixNo))
+        ? null
+        : Number(row.premixNo);
+    return rowPremix != null && rowPremix !== premix;
+  });
+  return {
+    mixerBuildingNumber: stamped.mixerBuildingNumber,
+    weightmentDetails: [...otherRows, ...(stamped.weightmentDetails ?? [])],
+    validation: stamped.validation,
+    premixSheets: full.premixSheets,
+  };
+};
+
+/** Ensure exactly one weighment row exists for the material × premix scope. */
+export const ensureWeightmentRowForMaterialPremix = (
+  sheet: RawMaterialPrepWeightmentSheet,
+  params: {
+    materialCode: string;
+    materialName?: string;
+    premixNo?: number | null;
+  },
+): RawMaterialPrepWeightmentSheet => {
+  const code = String(params.materialCode ?? "").trim();
+  if (!code) return sheet;
+  const premix =
+    params.premixNo == null || !Number.isFinite(Number(params.premixNo))
+      ? null
+      : Number(params.premixNo);
+  const scoped = filterWeightmentSheetForMaterial(sheet, code, premix);
+  if ((scoped.weightmentDetails?.length ?? 0) > 0) {
+    const first = scoped.weightmentDetails[0];
+    // Do not overwrite user-edited material code/name — only backfill scope once.
+    if (String(first.scopeMaterialCode ?? "").trim()) {
+      return sheet;
+    }
+    return mergeWeightmentSheetForMaterial(
+      sheet,
+      code,
+      {
+        ...scoped,
+        weightmentDetails: [
+          {
+            ...first,
+            scopeMaterialCode: code,
+            premixNo: first.premixNo ?? premix,
+          },
+        ],
+      },
+      premix,
+    );
+  }
+  return mergeWeightmentSheetForMaterial(
+    sheet,
+    code,
+    {
+      ...scoped,
+      weightmentDetails: [
+        createEmptyWeightmentDetail({
+          materialCode: code,
+          materialName: String(params.materialName ?? "").trim() || code,
+          scopeMaterialCode: code,
+          premixNo: premix,
+        }),
+      ],
+    },
+    premix,
+  );
+};
+
+/** Filter weighment sheet to rows for one premix (all materials). */
+export const filterWeightmentSheetForPremix = (
+  sheet: RawMaterialPrepWeightmentSheet,
+  premixNo?: number | null,
+): RawMaterialPrepWeightmentSheet => {
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  if (premix == null) return sheet;
+
+  const details = sheet.weightmentDetails ?? [];
+  const scoped = details.filter((row) => {
+    const rowPremix =
+      row.premixNo == null || !Number.isFinite(Number(row.premixNo))
+        ? null
+        : Number(row.premixNo);
+    return rowPremix === premix;
+  });
+  const meta = resolveWeightmentPremixMeta(sheet, premix);
+  const baseDetails =
+    scoped.length > 0
+      ? scoped
+      : details
+          .filter(
+            (row) => row.premixNo == null || !Number.isFinite(Number(row.premixNo)),
+          )
+          .map((row) => ({ ...row, premixNo: premix }));
+
+  return {
+    ...sheet,
+    mixerBuildingNumber: meta.mixerBuildingNumber,
+    validation: { ...createEmptyWeightmentValidation(), ...meta.validation },
+    weightmentDetails: baseDetails,
+    premixSheets: sheet.premixSheets,
+  };
+};
+
+/** Merge a premix-scoped weighment edit back into the full sheet. */
+export const mergeWeightmentSheetForPremix = (
+  full: RawMaterialPrepWeightmentSheet,
+  nextFiltered: RawMaterialPrepWeightmentSheet,
+  premixNo?: number | null,
+): RawMaterialPrepWeightmentSheet => {
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  const stampedDetails = (nextFiltered.weightmentDetails ?? []).map((row) => ({
+    ...row,
+    premixNo: row.premixNo ?? premix,
+  }));
+  const otherRows = (full.weightmentDetails ?? []).filter((row) => {
+    if (premix == null) return false;
+    const rowPremix =
+      row.premixNo == null || !Number.isFinite(Number(row.premixNo))
+        ? null
+        : Number(row.premixNo);
+    // Drop legacy null-premix rows once this premix takes ownership.
+    return rowPremix != null && rowPremix !== premix;
+  });
+
+  const nextMeta = {
+    premixNo: premix ?? 0,
+    mixerBuildingNumber: String(nextFiltered.mixerBuildingNumber ?? ""),
+    validation: {
+      ...createEmptyWeightmentValidation(),
+      ...nextFiltered.validation,
+    },
+  };
+  const otherPremixSheets = (full.premixSheets ?? []).filter(
+    (entry) => Number(entry.premixNo) !== premix,
+  );
+  const premixSheets =
+    premix != null && premix > 0
+      ? [...otherPremixSheets, nextMeta].sort((a, b) => Number(a.premixNo) - Number(b.premixNo))
+      : full.premixSheets ?? [];
+
+  return {
+    // Keep top-level as last-edited premix for legacy readers.
+    mixerBuildingNumber: nextMeta.mixerBuildingNumber,
+    weightmentDetails: [...otherRows, ...stampedDetails],
+    validation: nextMeta.validation,
+    premixSheets,
+  };
+};
+
+/**
+ * Ensure the active premix has one weighment row per identification-sheet material.
+ * Extra user-added rows (same material / extra containers) are preserved.
+ */
+export const ensureWeightmentRowsForPremixMaterials = (
+  sheet: RawMaterialPrepWeightmentSheet,
+  params: {
+    premixNo: number;
+    materials: MaterialItem[];
+  },
+): RawMaterialPrepWeightmentSheet => {
+  const premix = Number(params.premixNo);
+  if (!Number.isFinite(premix) || premix <= 0) return sheet;
+
+  const sheetMaterials = normalizeSheetMaterialsForWeightmentCompare(params.materials ?? []);
+  if (sheetMaterials.length === 0) return sheet;
+
+  const filtered = filterWeightmentSheetForPremix(sheet, premix);
+  const existing = filtered.weightmentDetails ?? [];
+  const materialCodeOf = (value: { materialCode?: string } | null | undefined) =>
+    String(value?.materialCode ?? "").trim().toUpperCase();
+  const gradeKeyOf = (value: {
+    gradeCode?: string;
+    gradeName?: string;
+  } | null | undefined) =>
+    String(value?.gradeCode ?? value?.gradeName ?? "").trim().toUpperCase();
+
+  const assignSheetMaterials = (rows: typeof existing) => {
+    const materialByRowIndex = new Map<number, (typeof sheetMaterials)[number]>();
+    const reserved = new Set<number>();
+    const unused = sheetMaterials.map((material) => material);
+    const claim = (
+      predicate: (row: (typeof existing)[number], material: (typeof sheetMaterials)[number]) => boolean,
+    ) => {
+      unused.forEach((material, materialIndex) => {
+        if (!material) return;
+        const matchIndex = rows.findIndex((row, index) => {
+          if (reserved.has(index)) return false;
+          return predicate(row, material);
+        });
+        if (matchIndex < 0) return;
+        reserved.add(matchIndex);
+        materialByRowIndex.set(matchIndex, material);
+        unused[materialIndex] = null as unknown as (typeof sheetMaterials)[number];
+      });
+    };
+    claim(
+      (row, material) =>
+        Boolean(gradeKeyOf(row) && gradeKeyOf(material)) &&
+        materialCodeOf(row) === materialCodeOf(material) &&
+        gradeKeyOf(row) === gradeKeyOf(material),
+    );
+    claim((row, material) => materialCodeOf(row) === materialCodeOf(material));
+    return {
+      materialByRowIndex,
+      toSeed: unused.filter(Boolean),
+    };
+  };
+
+  const { toSeed } = assignSheetMaterials(existing);
+
+  const stampIdentificationLocks = (
+    rows: typeof existing,
+  ): typeof existing => {
+    const { materialByRowIndex } = assignSheetMaterials(rows);
+    return rows.map((row, index) => {
+      const matchedMaterial = materialByRowIndex.get(index);
+      if (!matchedMaterial) {
+        return {
+          ...row,
+          fromIdentificationSheet: row.fromIdentificationSheet === true,
+        };
+      }
+      const code = String(matchedMaterial.materialCode ?? row.materialCode ?? "").trim();
+      const expectedWeight = Number(matchedMaterial.quantityPerPremix ?? NaN);
+      const expectedPct = Number(matchedMaterial.requiredComposition ?? NaN);
+      const currentWeight = Number(String(row.weightTransferred ?? "").replace(/,/g, ""));
+      const currentPct = Number(String(row.percentage ?? "").replace(/,/g, ""));
+      const wasAutoWeight =
+        Number.isFinite(expectedWeight) &&
+        Number.isFinite(currentWeight) &&
+        Math.abs(currentWeight - expectedWeight) < 0.001;
+      const wasAutoPct =
+        Number.isFinite(expectedPct) &&
+        Number.isFinite(currentPct) &&
+        Math.abs(currentPct - expectedPct) < 0.001;
+      return {
+        ...row,
+        fromIdentificationSheet: true,
+        materialCode: code,
+        materialName:
+          String(matchedMaterial.materialName ?? "").trim() ||
+          String(row.materialName ?? "").trim() ||
+          code,
+        gradeCode: String(matchedMaterial.gradeCode ?? "").trim(),
+        gradeName: String(matchedMaterial.gradeName ?? "").trim(),
+        scopeMaterialCode: String(row.scopeMaterialCode ?? "").trim() || code,
+        weightTransferred: wasAutoWeight ? "" : row.weightTransferred,
+        percentage: wasAutoPct ? "" : row.percentage,
+      };
+    });
+  };
+
+  if (toSeed.length === 0) {
+    const stamped = stampIdentificationLocks(existing);
+    // Compare against filtered premix rows (not the full sheet) so already-ensured
+    // sheets return the same reference and do not trip React update-depth loops.
+    if (JSON.stringify(stamped) === JSON.stringify(existing)) {
+      return sheet;
+    }
+    return mergeWeightmentSheetForPremix(
+      sheet,
+      { ...filtered, weightmentDetails: stamped },
+      premix,
+    );
+  }
+
+  const seededRows = toSeed.map((material) => {
+    const code = String(material.materialCode ?? "").trim();
+    const name = String(material.materialName ?? code).trim() || code;
+    return createEmptyWeightmentDetail({
+      materialCode: code,
+      materialName: name,
+      gradeCode: String(material.gradeCode ?? "").trim(),
+      gradeName: String(material.gradeName ?? "").trim(),
+      premixNo: premix,
+      scopeMaterialCode: code,
+      fromIdentificationSheet: true,
+      // Weight / % are user-entered — do not auto-fill from identification sheet.
+      percentage: "",
+      weightTransferred: "",
+    });
+  });
+
+  return mergeWeightmentSheetForPremix(
+    sheet,
+    {
+      ...filtered,
+      weightmentDetails: [...stampIdentificationLocks(existing), ...seededRows],
+    },
+    premix,
+  );
+};
+
+export const parseProcessingMaterialsFromDivisionDetails = (
+  payload: unknown,
+): QcProcessingMaterialSeed[] => {
+  const root = asRecord(payload) ?? {};
+  const data = asRecord(root.data) ?? root;
+  const seeds: QcProcessingMaterialSeed[] = [];
+
+  asArray(data.premixes).forEach((row) => {
+    const rec = asRecord(row);
+    if (!rec) return;
+    const premixNo = pickNumber(rec.premixNo, rec.premix_no, rec.no);
+    if (premixNo == null) return;
+    const details = asRecord(rec.details);
+    const premixDate =
+      pickString(rec.premixDate, rec.premix_date, details?.premixDate, details?.premix_date) ||
+      undefined;
+    const materialType =
+      pickString(rec.materialType, rec.material_type, details?.materialType, details?.material_type) ||
+      undefined;
+
+    const solidSource =
+      rec.solidProcess ??
+      rec.solid_process ??
+      details?.solidProcess ??
+      details?.solid_process ??
+      details?.solidProcessingDetails ??
+      details?.solid_processing_details ??
+      details?.solidProcessDetails;
+    const liquidSource =
+      rec.liquidProcess ??
+      rec.liquid_process ??
+      details?.liquidProcess ??
+      details?.liquid_process ??
+      details?.liquidProcessingDetails ??
+      details?.liquid_processing_details ??
+      details?.liquidProcessDetails;
+
+    seeds.push(
+      ...parseProcessMaterials(premixNo, premixDate, materialType, "solid", solidSource),
+      ...parseProcessMaterials(premixNo, premixDate, materialType, "liquid", liquidSource),
+    );
+  });
+
+  return seeds;
+};
+
+export const getProcessingMaterialsForPremix = (
+  payload: unknown,
+  premixNo: number,
+): QcProcessingMaterialSeed[] =>
+  parseProcessingMaterialsFromDivisionDetails(payload).filter((seed) => seed.premixNo === premixNo);
+
+export type QcProcessingMaterialCatalog = {
+  solidMaterials: RawMaterialPrepMaterialOption[];
+  liquidMaterials: RawMaterialPrepMaterialOption[];
+};
+
+export const fetchProcessingMaterialCatalog = async (): Promise<QcProcessingMaterialCatalog> => {
+  const [solidResp, liquidResp] = await Promise.all([
+    operationsController.fetchMaterialsList({ materialType: "SOLID" }),
+    operationsController.fetchMaterialsList({ materialType: "LIQUID" }),
+  ]);
+  return {
+    solidMaterials: solidResp?.success ? (solidResp.data ?? []) : [],
+    liquidMaterials: liquidResp?.success ? (liquidResp.data ?? []) : [],
+  };
+};
+
+/** Resolve material-master form template (TMP / DEFAULT / AP / …) for process UI. */
+export const resolveProcessingRmpFormTemplate = (
+  materialCode: string,
+  catalog?: QcProcessingMaterialCatalog | null,
+  fallback?: string | null,
+): string => {
+  const fromFallback = String(fallback ?? "").trim().toUpperCase();
+  if (fromFallback) return fromFallback;
+  const code = String(materialCode ?? "").trim();
+  if (!code || !catalog) return "DEFAULT";
+  const match = findPrepMaterialByCode(
+    mergeMaterialsLists(catalog.solidMaterials, catalog.liquidMaterials),
+    code,
+  );
+  return String(match?.rmpFormTemplate ?? "").trim().toUpperCase() || "DEFAULT";
+};
+
+/** Attach catalog template onto seeds so UI retains the form after empty draft saves. */
+export const withCatalogRmpFormTemplate = (
+  seeds: QcProcessingMaterialSeed[],
+  catalog: QcProcessingMaterialCatalog,
+): QcProcessingMaterialSeed[] =>
+  seeds.map((seed) => ({
+    ...seed,
+    rmpFormTemplate: resolveProcessingRmpFormTemplate(
+      seed.materialCode,
+      catalog,
+      seed.rmpFormTemplate,
+    ),
+  }));
+
+const processingMaterialSeedKey = (seed: Pick<
+  QcProcessingMaterialSeed,
+  "premixNo" | "materialCode" | "processSlot"
+>) =>
+  `${seed.premixNo}:${String(seed.materialCode ?? "").trim().toUpperCase()}:${seed.processSlot}`;
+
+const resolveCatalogMaterialId = (
+  materialCode: string,
+  preferredId: number | undefined | null,
+  catalog: QcProcessingMaterialCatalog,
+): number | null => {
+  const preferred = Number(preferredId ?? 0);
+  if (Number.isFinite(preferred) && preferred > 0) return preferred;
+  const all = mergeMaterialsLists(catalog.solidMaterials, catalog.liquidMaterials);
+  const match = findPrepMaterialByCode(all, materialCode);
+  const id = Number(match?.materialId ?? 0);
+  return id > 0 ? id : null;
+};
+
+const sortProcessingSeedsBySheetOrder = (
+  seeds: QcProcessingMaterialSeed[],
+  batchPayload: unknown,
+): QcProcessingMaterialSeed[] => {
+  const batch = resolveBatchPayloadRoot(batchPayload);
+  const sheet = asRecord(batch?.identificationSheet);
+  const sheetMaterials = asArray(sheet?.materials);
+  const order = new Map<string, number>();
+  sheetMaterials.forEach((row, index) => {
+    const rec = asRecord(row);
+    const code = pickString(rec?.materialCode, rec?.material_code);
+    if (code) order.set(code.toUpperCase(), index);
+  });
+  return [...seeds].sort((a, b) => {
+    const ao = order.get(a.materialCode.toUpperCase()) ?? 999;
+    const bo = order.get(b.materialCode.toUpperCase()) ?? 999;
+    if (ao !== bo) return ao - bo;
+    return a.processSlot.localeCompare(b.processSlot);
+  });
+};
+
+/** @deprecated Prefer status-aware resolveProcessingMaterialSeedsForPremix — no cross-source merge. */
+export const mergeProcessingMaterialSeeds = (
+  sheetSeeds: QcProcessingMaterialSeed[],
+  detailSeeds: QcProcessingMaterialSeed[],
+): QcProcessingMaterialSeed[] => {
+  if (!sheetSeeds.length) return detailSeeds;
+  if (!detailSeeds.length) return sheetSeeds;
+
+  const detailByKey = new Map(
+    detailSeeds.map((seed) => [processingMaterialSeedKey(seed), seed] as const),
+  );
+  const seen = new Set<string>();
+  const merged: QcProcessingMaterialSeed[] = [];
+
+  for (const sheetSeed of sheetSeeds) {
+    const key = processingMaterialSeedKey(sheetSeed);
+    seen.add(key);
+    const detail = detailByKey.get(key);
+    merged.push(
+      detail
+        ? {
+            ...sheetSeed,
+            ...detail,
+            sections: detail.sections.length ? detail.sections : sheetSeed.sections,
+            process: detail.process ?? sheetSeed.process,
+            premixDate: detail.premixDate ?? sheetSeed.premixDate,
+            materialType: detail.materialType ?? sheetSeed.materialType,
+          }
+        : sheetSeed,
+    );
+  }
+
+  for (const detail of detailSeeds) {
+    const key = processingMaterialSeedKey(detail);
+    if (!seen.has(key)) merged.push(detail);
+  }
+
+  return merged;
+};
+
+/**
+ * Build processing material seeds from batch identification sheet — one tab per sheet row
+ * per premix (solid and/or liquid slot from material master), independent of premix nav type.
+ */
+export const buildProcessingMaterialSeedsFromBatchSheet = (
+  batchPayload: unknown,
+  premixNo: number,
+  _processingType: string | undefined,
+  catalog: QcProcessingMaterialCatalog,
+): QcProcessingMaterialSeed[] => {
+  const batch = resolveBatchPayloadRoot(batchPayload);
+  if (!batch) return [];
+
+  const sheet = asRecord(batch.identificationSheet);
+  const sheetMaterials = asArray(sheet?.materials).filter(
+    (row): row is MaterialItem => row != null && typeof row === "object",
+  );
+  if (!sheetMaterials.length) return [];
+
+  const seeds: QcProcessingMaterialSeed[] = [];
+
+  sheetMaterials.forEach((row) => {
+    const selection = buildMaterialSelectionFromSheetRow(
+      row,
+      premixNo,
+      catalog.solidMaterials,
+      catalog.liquidMaterials,
+    );
+
+    if (selection.selectedProcesses.solid && selection.solidMaterialCode) {
+      const materialId = resolveCatalogMaterialId(
+        selection.solidMaterialCode,
+        selection.solidMaterialId,
+        catalog,
+      );
+      if (materialId) {
+        seeds.push({
+          premixNo,
+          processSlot: "solid",
+          materialId,
+          materialCode: selection.solidMaterialCode,
+          materialName: selection.materialName,
+          gradeId: selection.solidGradeId ?? null,
+          gradeCode: selection.solidGradeCode || null,
+          rmpFormTemplate: resolveProcessingRmpFormTemplate(
+            selection.solidMaterialCode,
+            catalog,
+          ),
+          sections: [],
+        });
+      }
+    }
+
+    if (selection.selectedProcesses.liquid && selection.liquidMaterialCode) {
+      const materialId = resolveCatalogMaterialId(
+        selection.liquidMaterialCode,
+        selection.liquidMaterialId,
+        catalog,
+      );
+      if (materialId) {
+        seeds.push({
+          premixNo,
+          processSlot: "liquid",
+          materialId,
+          materialCode: selection.liquidMaterialCode,
+          materialName: selection.materialName,
+          gradeId: null,
+          gradeCode: null,
+          rmpFormTemplate: resolveProcessingRmpFormTemplate(
+            selection.liquidMaterialCode,
+            catalog,
+          ),
+          sections: [],
+        });
+      }
+    }
+  });
+
+  return sortProcessingSeedsBySheetOrder(seeds, batchPayload);
+};
+
+/**
+ * QC data-source rule (all divisions, all batch types):
+ * - TO_BE_INITIATED → manufacturing `/qc-division/division-details` (identification sheet
+ *   only when division-details has no material rows yet).
+ * - IN_PROGRESS+ → saved `/qc-division/details` only — never merge with division-details/sheet.
+ */
+export const resolveProcessingMaterialSeedsForPremix = async (
+  payload: unknown,
+  premixNo: number,
+  options?: {
+    batchPayload?: unknown;
+    processingType?: string;
+    catalog?: QcProcessingMaterialCatalog;
+    useFormDetails?: boolean;
+  },
+): Promise<{ seeds: QcProcessingMaterialSeed[]; catalog: QcProcessingMaterialCatalog }> => {
+  const catalog = options?.catalog ?? (await fetchProcessingMaterialCatalog());
+
+  if (options?.useFormDetails) {
+    return {
+      seeds: withCatalogRmpFormTemplate(
+        getProcessingMaterialsForPremix(payload, premixNo),
+        catalog,
+      ),
+      catalog,
+    };
+  }
+
+  const fromDivisionDetails = getProcessingMaterialsForPremix(payload, premixNo);
+  if (fromDivisionDetails.length) {
+    return {
+      seeds: withCatalogRmpFormTemplate(
+        sortProcessingSeedsBySheetOrder(fromDivisionDetails, options?.batchPayload),
+        catalog,
+      ),
+      catalog,
+    };
+  }
+
+  return {
+    seeds: buildProcessingMaterialSeedsFromBatchSheet(
+      options?.batchPayload,
+      premixNo,
+      options?.processingType,
+      catalog,
+    ),
+    catalog,
+  };
+};
+
+/** RMP uses typed manufacturing UI; QC processing reads saved sections + weightment (no schema HTTP). */
+export const fetchQcProcessingMaterialSchema = async (_params: {
+  subDepartmentId: number;
+  seed: QcProcessingMaterialSeed;
+  catalog?: QcProcessingMaterialCatalog;
+}): Promise<SchemaDocumentV2 | null> => null;
+
+export const hydrateProcessingMaterialValues = (
+  schema: SchemaDocumentV2,
+  sections: SchemaSectionSubmission[],
+  context?: {
+    materialId: number;
+    materialCode: string;
+    materialName: string;
+    gradeId?: number | null;
+    gradeCode?: string | null;
+  },
+): SchemaFormValues => {
+  if (sections.length > 0) {
+    const normalized = context
+      ? normalizeProcessingSectionsForSchema(schema, sections, context)
+      : sections;
+    return hydrateValuesFromProcess(schema, normalized);
+  }
+  return createInitialValues(schema);
+};
+
+export const hydrateProcessingMaterialValuesFromSeed = (
+  schema: SchemaDocumentV2,
+  seed: QcProcessingMaterialSeed,
+): SchemaFormValues =>
+  hydrateProcessingMaterialValues(schema, seed.sections, {
+    materialId: seed.materialId,
+    materialCode: seed.materialCode,
+    materialName: seed.materialName,
+    gradeId: seed.gradeId,
+    gradeCode: seed.gradeCode,
+  });
+
+export const buildProcessingMaterialEntry = (
+  seed: QcProcessingMaterialSeed,
+  options?: { schemaUnavailable?: boolean; rmpFormTemplate?: string | null },
+): QcDivisionEntry => {
+  const schemaCacheKey = getQcProcessingMaterialSchemaCacheKey(seed);
+  const rmpFormTemplate =
+    String(options?.rmpFormTemplate ?? seed.rmpFormTemplate ?? "")
+      .trim()
+      .toUpperCase() || "DEFAULT";
+  const identityProcess: PreparationProcessEntry = {
+    materialId: seed.materialId,
+    materialCode: seed.materialCode,
+    materialName: seed.materialName,
+    gradeId: seed.gradeId,
+    gradeCode: seed.gradeCode,
+    lotDetails: seed.process?.lotDetails ?? [],
+    lotDetailsQaRemarks: seed.process?.lotDetailsQaRemarks ?? null,
+    qaRemarks: seed.process?.qaRemarks ?? null,
+    drying: seed.process?.drying ?? null,
+    sieving: seed.process?.sieving ?? null,
+    apCoarse: seed.process?.apCoarse ?? null,
+    apFine: seed.process?.apFine ?? null,
+    apUltraFine: seed.process?.apUltraFine ?? null,
+    aluminum: seed.process?.aluminum ?? null,
+    doa: seed.process?.doa ?? null,
+    processType: seed.process?.processType,
+    ...(seed.sections.length || seed.process?.sections?.length
+      ? { sections: seed.process?.sections?.length ? seed.process.sections : seed.sections }
+      : {}),
+  };
+  return {
+    entryId: createProcessingEntryId(),
+    flowKey: "RAW_MATERIAL",
+    kind: "PROCESSING_MATERIAL",
+    apiDivision: "RAW_MATERIAL_PROCESSING",
+    subType: seed.processSlot === "liquid" ? "LIQUID_PROCESSING" : "SOLID_PROCESSING",
+    label: getQcProcessingMaterialLabel(seed),
+    premixNo: seed.premixNo,
+    premixDate: seed.premixDate,
+    materialId: seed.materialId,
+    materialCode: seed.materialCode,
+    materialName: seed.materialName,
+    gradeId: seed.gradeId,
+    gradeCode: seed.gradeCode,
+    processSlot: seed.processSlot,
+    rmpFormTemplate,
+    schemaCacheKey,
+    schemaUnavailable: options?.schemaUnavailable === true,
+    // Keep API-flat sections; normalize at hydrate time (same as RMP).
+    savedSections: seed.sections,
+    // Always keep a process shell so empty drafts still hydrate the material template.
+    savedProcess: seed.process ?? identityProcess,
+  };
+};
+
+/** Apply typed process panel edits onto a processing material entry (RMP parity). */
+export const applyProcessingProcessSlotToEntry = (
+  entry: QcDivisionEntry,
+  slotState: RawMaterialPrepMaterialProcessSlot,
+): QcDivisionEntry => {
+  const process = buildProcessFromTypedForm({
+    uiKey: slotState.uiKey,
+    processForm: slotState.processForm,
+    material: undefined,
+    gradeCode: String(entry.gradeCode ?? "").trim(),
+    fallback: {
+      materialId: Number(entry.materialId ?? 0),
+      materialCode: String(entry.materialCode ?? "").trim(),
+      materialName: String(entry.materialName ?? entry.materialCode ?? "").trim(),
+      gradeId: entry.gradeId ?? undefined,
+    },
+  });
+  if (!process) return entry;
+  const sections = typedProcessToDisplaySections(process);
+  return {
+    ...entry,
+    savedProcess: process,
+    savedSections: sections.length ? sections : entry.savedSections,
+  };
+};
+
+export const buildQcProcessingMaterialSubmission = (
+  schema: SchemaDocumentV2,
+  values: SchemaFormValues,
+  entry: QcDivisionEntry,
+): SchemaProcessSubmission => ({
+  materialId: Number(entry.materialId),
+  materialCode: String(entry.materialCode ?? ""),
+  materialName: String(entry.materialName ?? entry.materialCode ?? ""),
+  gradeId: entry.gradeId ?? null,
+  gradeCode: entry.gradeCode ?? null,
+  schemaVersion: schema.schemaVersion || RMP_SCHEMA_VERSION,
+  schemaType: schema.schemaType || RMP_SCHEMA_TYPE,
+  sections: toSectionSubmissions(schema, values),
+});
+
+export type QcProcessingProcessApiPayload = {
+  materialId: number;
+  materialCode: string;
+  materialName: string;
+  gradeId?: number;
+  gradeCode?: string;
+  schemaVersion: string;
+  schemaType: string;
+  sections: Array<{ sectionId: string; sectionData: Record<string, unknown>[] }>;
+  /** RMP-parity typed blocks — persisted so empty drafts still reload with template data. */
+  processType?: string;
+  lotDetails?: LotDetailDto[];
+  lotDetailsQaRemarks?: string | null;
+  qaRemarks?: string | null;
+  drying?: PreparationProcessEntry["drying"];
+  sieving?: PreparationProcessEntry["sieving"];
+  apCoarse?: PreparationProcessEntry["apCoarse"];
+  apFine?: PreparationProcessEntry["apFine"];
+  apUltraFine?: PreparationProcessEntry["apUltraFine"];
+  aluminum?: PreparationProcessEntry["aluminum"];
+  doa?: PreparationProcessEntry["doa"];
+};
+
+export type QcProcessingPremixApiPayload = {
+  premixNo: number;
+  premixDate?: string;
+  materialType: "SOLID" | "LIQUID" | "BOTH";
+  premixSubmissionType?: "DRAFT" | "SUBMIT";
+  solidProcess: QcProcessingProcessApiPayload[];
+  liquidProcess: QcProcessingProcessApiPayload[];
+};
+
+const toApiProcessPayload = (process: SchemaProcessSubmission): QcProcessingProcessApiPayload => {
+  const payload: QcProcessingProcessApiPayload = {
+    materialId: Number(process.materialId ?? 0),
+    materialCode: String(process.materialCode ?? "").trim(),
+    materialName: String(process.materialName ?? process.materialCode ?? "").trim(),
+    schemaVersion: process.schemaVersion || RMP_SCHEMA_VERSION,
+    schemaType: process.schemaType || RMP_SCHEMA_TYPE,
+    sections: normalizeSectionsForApiPayload(process.sections ?? []),
+  };
+  if (process.gradeId != null) payload.gradeId = Number(process.gradeId);
+  const gradeCode = String(process.gradeCode ?? "").trim();
+  if (gradeCode) payload.gradeCode = gradeCode;
+  return payload;
+};
+
+/** Fallback when schema is not hydrated — keep identity + typed process / sections (RMP parity). */
+const buildProcessingProcessFromEntry = (
+  entry: QcDivisionEntry,
+  sections: SchemaSectionSubmission[],
+): QcProcessingProcessApiPayload => {
+  const process = entry.savedProcess;
+  const typedSections =
+    sections.length > 0
+      ? sections
+      : process
+        ? typedProcessToDisplaySections(process)
+        : [];
+  const base = toApiProcessPayload({
+    materialId: Number(entry.materialId ?? process?.materialId ?? 0),
+    materialCode: String(entry.materialCode ?? process?.materialCode ?? "").trim(),
+    materialName: String(
+      entry.materialName ?? process?.materialName ?? entry.materialCode ?? "",
+    ).trim(),
+    gradeId: entry.gradeId ?? process?.gradeId ?? null,
+    gradeCode: entry.gradeCode ?? process?.gradeCode ?? null,
+    schemaVersion: RMP_SCHEMA_VERSION,
+    schemaType: RMP_SCHEMA_TYPE,
+    sections: typedSections,
+  });
+  if (!process) return base;
+  return {
+    ...base,
+    ...(process.processType ? { processType: process.processType } : {}),
+    lotDetails: process.lotDetails ?? [],
+    lotDetailsQaRemarks: process.lotDetailsQaRemarks ?? null,
+    qaRemarks: process.qaRemarks ?? null,
+    drying: process.drying ?? null,
+    sieving: process.sieving ?? null,
+    apCoarse: process.apCoarse ?? null,
+    apFine: process.apFine ?? null,
+    apUltraFine: process.apUltraFine ?? null,
+    aluminum: process.aluminum ?? null,
+    doa: process.doa ?? null,
+  };
+};
+
+export const deriveProcessingMaterialType = (
+  solidCount: number,
+  liquidCount: number,
+): "SOLID" | "LIQUID" | "BOTH" => {
+  if (solidCount > 0 && liquidCount > 0) return "BOTH";
+  if (liquidCount > 0) return "LIQUID";
+  return "SOLID";
+};
+
+/**
+ * Create/update payload shape (same as Raw Material Preparation process sections):
+ * data.premixes[{
+ *   premixNo, premixDate?, materialType, premixSubmissionType?,
+ *   solidProcess: [{ materialId, materialCode, materialName, gradeId, gradeCode, schemaVersion, schemaType, sections }],
+ *   liquidProcess: [...]
+ * }]
+ */
+export const buildProcessingPremixesPayload = (
+  form: {
+    schemasByKey?: Partial<Record<string, SchemaDocumentV2>>;
+    divisionEntryValues?: Record<string, { schemaValues?: SchemaFormValues }>;
+  },
+  entries: QcDivisionEntry[],
+  options?: { unitSubmissionType?: "DRAFT" | "SUBMIT" | null },
+): QcProcessingPremixApiPayload[] => {
+  const byPremix = new Map<number, QcDivisionEntry[]>();
+  entries.forEach((entry) => {
+    if (entry.kind !== "PROCESSING_MATERIAL" || entry.premixNo == null) return;
+    const list = byPremix.get(entry.premixNo) ?? [];
+    list.push(entry);
+    byPremix.set(entry.premixNo, list);
+  });
+
+  return Array.from(byPremix.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([premixNo, premixEntries]) => {
+      const solidProcess: QcProcessingProcessApiPayload[] = [];
+      const liquidProcess: QcProcessingProcessApiPayload[] = [];
+
+      premixEntries.forEach((entry) => {
+        const schemaKey = entry.schemaCacheKey;
+        const schema = schemaKey ? form.schemasByKey?.[schemaKey] : null;
+        const values = form.divisionEntryValues?.[entry.entryId]?.schemaValues ?? {};
+
+        let process: QcProcessingProcessApiPayload;
+        if (schema) {
+          process = toApiProcessPayload(
+            serializeProcessSubmissionForApi(
+              buildQcProcessingMaterialSubmission(schema, values, entry),
+              schema,
+            ),
+          );
+        } else {
+          process = buildProcessingProcessFromEntry(entry, entry.savedSections ?? []);
+        }
+
+        if (entry.processSlot === "liquid") {
+          liquidProcess.push(process);
+        } else {
+          solidProcess.push(process);
+        }
+      });
+
+      const premixDateRaw = String(premixEntries[0]?.premixDate ?? "").trim();
+      const premixDate = premixDateRaw
+        ? formatToIsoDateInput(premixDateRaw) || premixDateRaw
+        : "";
+      return {
+        premixNo,
+        ...(premixDate ? { premixDate } : {}),
+        materialType: deriveProcessingMaterialType(solidProcess.length, liquidProcess.length),
+        ...(options?.unitSubmissionType
+          ? { premixSubmissionType: options.unitSubmissionType }
+          : {}),
+        solidProcess,
+        liquidProcess,
+      };
+    });
+};
+
+/** Build RMP-style weighment selections from QC processing material entries. */
+export const buildWeightmentSelectionsFromProcessingEntries = (
+  entries: QcDivisionEntry[],
+  premixNo?: number | null,
+): Array<{
+  premix: number;
+  materialKey: string;
+  solidMaterialCode?: string;
+  liquidMaterialCode?: string;
+  selectedProcesses: { solid?: boolean; liquid?: boolean };
+}> => {
+  const targetPremix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) || Number(premixNo) <= 0
+      ? null
+      : Number(premixNo);
+
+  return entries
+    .filter((entry) => {
+      if (entry.kind !== "PROCESSING_MATERIAL") return false;
+      const code = String(entry.materialCode ?? "").trim();
+      if (!code) return false;
+      if (targetPremix == null) return true;
+      return Number(entry.premixNo) === targetPremix;
+    })
+    .map((entry) => {
+      const code = String(entry.materialCode ?? "").trim();
+      const premix = Number(entry.premixNo);
+      const isLiquid = entry.processSlot === "liquid";
+      return {
+        premix: Number.isFinite(premix) && premix > 0 ? premix : 0,
+        materialKey: code || entry.entryId,
+        solidMaterialCode: isLiquid ? undefined : code,
+        liquidMaterialCode: isLiquid ? code : undefined,
+        selectedProcesses: { solid: !isLiquid, liquid: isLiquid },
+      };
+    });
+};
+
+/** Resolve identification-sheet materials from batch / autopopulate payloads. */
+export const resolveQcIdentificationMaterials = (payload: unknown): MaterialItem[] => {
+  const root = asRecord(payload);
+  if (!root) return [];
+  const nestedBatch = asRecord(root.batch);
+  const sheetRaw = root.identificationSheet ?? nestedBatch?.identificationSheet ?? null;
+  if (!sheetRaw || typeof sheetRaw !== "object") return [];
+  return normalizeSheetMaterialsForWeightmentCompare(
+    (sheetRaw as { materials?: unknown }).materials,
+  );
+};

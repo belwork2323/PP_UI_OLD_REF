@@ -1,0 +1,177 @@
+import React from "react";
+import { Box, Button } from "@mui/material";
+import CasePrepDateField from "../manufacturing/CasePreparation/CasePrepDateField";
+import CasePrepTextField from "../manufacturing/CasePreparation/CasePrepTextField";
+import CasePrepSelect from "../manufacturing/CasePreparation/CasePrepSelect";
+import {
+  DISPATCH_FLOW_LABELS,
+  DISPATCH_YES_NO_OPTIONS,
+  DispatchSharedSetup,
+  canLoadDispatchMotor,
+} from "../../../../hooks/user/dispatch/dispatchFlowConfig";
+import type getDispatchTheme from "../../../../app/theme/custom_themes/user/dispatch/dispatch_theme";
+
+type DispatchFlowBarProps = {
+  setup: DispatchSharedSetup;
+  draftMotorId: string;
+  usedMotorIds?: string[];
+  hasMotors?: boolean;
+  onSetupChange: <K extends keyof DispatchSharedSetup>(
+    field: K,
+    value: DispatchSharedSetup[K],
+  ) => void;
+  onLoadForm: () => void;
+  theme: any;
+  dispatchTheme: ReturnType<typeof getDispatchTheme>;
+  validationErrors?: Record<string, string>;
+};
+
+const DispatchFlowBar: React.FC<DispatchFlowBarProps> = ({
+  setup,
+  draftMotorId,
+  usedMotorIds = [],
+  hasMotors = false,
+  onSetupChange,
+  onLoadForm,
+  theme,
+  dispatchTheme,
+  validationErrors = {},
+}) => {
+  const flowBar = dispatchTheme.flowBar;
+  const casePrepFlowBar = theme.manufacturing?.casePreparation?.flowBar ?? {};
+  const L = DISPATCH_FLOW_LABELS;
+
+  const canLoad = canLoadDispatchMotor({
+    setup,
+    draftMotorId,
+    usedMotorIds,
+    hasMotors,
+  });
+
+  const selectTheme = {
+    ...theme,
+    manufacturing: theme.manufacturing ?? { casePreparation: { flowBar: casePrepFlowBar } },
+  };
+
+  return (
+    <Box sx={flowBar.container}>
+      <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {/* Row 1: Dates & Location */}
+        <Box sx={flowBar.topRow}>
+          <CasePrepDateField
+            label={L.castingDate}
+            value={setup.castingDate ?? ""}
+            onChange={(val) => onSetupChange("castingDate", val)}
+            theme={selectTheme}
+            type="datetime"
+            required
+          />
+
+          <Box data-dispatch-field="setup.dispatchDate">
+            <CasePrepDateField
+              label={L.dispatchDate}
+              value={setup.dispatchDate ?? ""}
+              onChange={(val) => onSetupChange("dispatchDate", val)}
+              theme={selectTheme}
+              type="datetime"
+              required
+              error={Boolean(validationErrors["setup.dispatchDate"])}
+              helperText={validationErrors["setup.dispatchDate"]}
+            />
+          </Box>
+
+          <Box data-dispatch-field="setup.dispatchLocation">
+            <CasePrepTextField
+              label={L.dispatchLocation}
+              value={setup.dispatchLocation ?? ""}
+              placeholder={L.dispatchLocationPlaceholder}
+              width={240}
+              theme={selectTheme}
+              required
+              error={Boolean(validationErrors["setup.dispatchLocation"])}
+              helperText={validationErrors["setup.dispatchLocation"]}
+              onChange={(val) => onSetupChange("dispatchLocation", val)}
+            />
+          </Box>
+        </Box>
+
+        {/* Row 2: Clearances & Action */}
+        <Box sx={flowBar.topRow}>
+          <Box data-dispatch-field="setup.ndtClearance">
+            <CasePrepSelect
+              label={L.ndtClearance}
+              value={setup.ndtClearance ?? ""}
+              placeholder="Select"
+              options={DISPATCH_YES_NO_OPTIONS}
+              width={200}
+              theme={selectTheme}
+              required
+              error={Boolean(validationErrors["setup.ndtClearance"])}
+              helperText={validationErrors["setup.ndtClearance"]}
+              onChange={(val) => onSetupChange("ndtClearance", val)}
+            />
+          </Box>
+
+          {setup.ndtClearance === "YES" && (
+            <Box data-dispatch-field="setup.ndtMomNo">
+              <CasePrepTextField
+                label={L.ndtMomNo}
+                value={setup.ndtMomNo ?? ""}
+                placeholder={L.ndtMomNoPlaceholder}
+                theme={selectTheme}
+                required
+                error={Boolean(validationErrors["setup.ndtMomNo"])}
+                helperText={validationErrors["setup.ndtMomNo"]}
+                onChange={(val) => onSetupChange("ndtMomNo", val)}
+              />
+            </Box>
+          )}
+
+          <Box data-dispatch-field="setup.finalAcceptanceClearance">
+            <CasePrepSelect
+              label={L.finalAcceptanceClearance}
+              value={setup.finalAcceptanceClearance ?? ""}
+              placeholder="Select"
+              options={DISPATCH_YES_NO_OPTIONS}
+              width={240}
+              theme={selectTheme}
+              required
+              error={Boolean(validationErrors["setup.finalAcceptanceClearance"])}
+              helperText={validationErrors["setup.finalAcceptanceClearance"]}
+              onChange={(val) => onSetupChange("finalAcceptanceClearance", val)}
+            />
+          </Box>
+
+          {setup.finalAcceptanceClearance === "YES" && (
+            <Box data-dispatch-field="setup.finalAcceptanceMomNo">
+              <CasePrepTextField
+                label={L.finalAcceptanceMomNo}
+                value={setup.finalAcceptanceMomNo ?? ""}
+                placeholder={L.finalAcceptanceMomNoPlaceholder}
+                theme={selectTheme}
+                required
+                error={Boolean(validationErrors["setup.finalAcceptanceMomNo"])}
+                helperText={validationErrors["setup.finalAcceptanceMomNo"]}
+                onChange={(val) => onSetupChange("finalAcceptanceMomNo", val)}
+              />
+            </Box>
+          )}
+
+          <Box sx={{ ...flowBar.actionRow, ml: "auto" }}>
+            <Button
+              variant="contained"
+              size="medium"
+              disabled={!canLoad}
+              onClick={onLoadForm}
+              sx={flowBar.primaryAction}
+            >
+              {L.loadForm}
+            </Button>
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
+export default DispatchFlowBar;

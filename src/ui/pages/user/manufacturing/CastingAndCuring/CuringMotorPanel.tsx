@@ -1,0 +1,622 @@
+import { useRef } from "react";
+import {
+  Box,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+} from "@mui/material";
+import {
+  HOT_WATER_STATUS_OPTIONS,
+  type CuringCycleRow,
+  type CuringMotorData,
+} from "../../../../../data/models/user/CuringMotorDataModel";
+import { DateTimeField } from "../../../../components/common/DateField";
+import CastingCuringFileField from "./CastingCuringFileField";
+import {
+  FieldGrid,
+  FieldLabel,
+  SectionCard,
+  TableSelectInput,
+  TableTextInput,
+  castingCuringTableCellSx,
+  castingCuringTableContainerSx,
+  castingCuringTableHeaderCellSx,
+  castingCuringTableInputSx,
+  castingCuringTableRowSx,
+} from "./CastingCuringFormPrimitives";
+import { useBuildingOptions } from "../../../../../hooks/user/useBuildingOptions";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+
+const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
+
+const joinDateTime = (date: string, time: string) => (date && time ? `${date} ${time}` : "");
+
+const splitDateTime = (value: string): { date: string; time: string } => {
+  const match = value.match(/^(\d{1,2}-\d{1,2}-\d{4})\s+(\d{1,2}:\d{2})$/);
+  return match ? { date: match[1], time: match[2] } : { date: "", time: "" };
+};
+
+const elapsedMinutes = (start: string, end: string): string => {
+  const parse = (value: string) => {
+    const match = value.match(/^(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const date = new Date(year, month - 1, day, hour, minute);
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month - 1 ||
+      date.getDate() !== day ||
+      date.getHours() !== hour ||
+      date.getMinutes() !== minute
+    )
+      return null;
+    return date.getTime();
+  };
+  const startMs = parse(start);
+  const endMs = parse(end);
+  if (startMs === null || endMs === null || endMs < startMs) return "";
+  return String(Math.floor((endMs - startMs) / 60_000));
+};
+
+type Props = {
+  value: CuringMotorData;
+  onChange: (next: CuringMotorData) => void;
+  motorId: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  theme?: any;
+  validationErrors?: Record<string, string>;
+  clearFieldError?: (path: string) => void;
+};
+
+const CompactDateTime = ({
+  value,
+  onChange,
+  minDate,
+  disabled,
+  readOnly,
+  required = false,
+  error,
+  helperText,
+  fieldPath,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  minDate?: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  required?: boolean;
+  error?: boolean;
+  helperText?: string;
+  fieldPath?: string;
+}) => (
+  <Box {...(fieldPath ? { "data-cc-field": fieldPath } : {})}>
+    <DateTimeField
+      value={value}
+      minDate={minDate}
+      onChange={onChange}
+      disabled={disabled}
+      readOnly={readOnly}
+      compact
+      placeholder="DD-MM-YYYY HH:mm"
+      inputSx={castingCuringTableInputSx}
+      required={required}
+      error={error}
+      helperText={helperText}
+    />
+  </Box>
+);
+
+const CYCLE_HEADERS = [
+  "S.No",
+  "Temperature (°C)",
+  "Time (min)",
+  "Start Date & Time",
+  "End Date & Time",
+] as const;
+
+const CuringMotorPanel = ({
+  value,
+  onChange,
+  motorId: _motorId,
+  disabled = false,
+  readOnly = false,
+  theme,
+  validationErrors,
+  clearFieldError,
+}: Props) => {
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const { dropdownOptions: buildingOptions, loadingBuildings } = useBuildingOptions(true);
+
+  const patchSection = <K extends keyof CuringMotorData>(
+    sectionKey: K,
+    partial: Partial<CuringMotorData[K]>,
+  ) => {
+    onChange({
+      ...value,
+      [sectionKey]: {
+        ...value[sectionKey],
+        ...partial,
+      },
+    });
+  };
+
+  const updateCycleRow = (index: number, patch: Partial<CuringCycleRow>) => {
+    const rows = (value.CURING_CYCLES.CURING_TABLE ?? []).map((row, i) =>
+      i === index ? { ...row, ...patch } : row,
+    );
+    patchSection("CURING_CYCLES", { CURING_TABLE: rows });
+  };
+
+  const cycles = value.CURING_CYCLES.CURING_TABLE ?? [];
+  const post = value.POST_CURING_DETAILS;
+  const decor = value.DECORING_DETAILS;
+
+  const cycleHeaders = [
+    ...CYCLE_HEADERS,
+    "Propellant Pressure (bar)",
+    "Status Of Hot Water Circulation",
+    "Duration (min)",
+    "Remarks",
+  ];
+  return (
+    <Box>
+      <SectionCard title="Curing Cycles" theme={theme}>
+        <TableContainer sx={{ ...castingCuringTableContainerSx, overflowX: "auto" }}>
+          <Table size="small" sx={{ minWidth: 1080 }}>
+            <TableHead>
+              <TableRow>
+                {cycleHeaders.map((label, idx) => (
+                  <TableCell key={label} sx={castingCuringTableHeaderCellSx(idx === 0)}>
+                    <FieldLabelWithAsterisk
+                      label={label}
+                      required={
+                        label !== "Propellant Pressure (bar)" &&
+                        label !== "S.No" &&
+                        label !== "Remarks"
+                      }
+                      sx={castingCuringTableHeaderCellSx(idx === 0)}
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {cycles.map((row, index) => {
+                // Define paths mapping for error checks inside the loop
+                const tempPath = `CURING_CYCLES.CURING_TABLE.${index}.TEMPERATURE`;
+                const timePath = `CURING_CYCLES.CURING_TABLE.${index}.TIME`;
+                const startDatePath = `CURING_CYCLES.CURING_TABLE.${index}.START_DATE`;
+                const startTimePath = `CURING_CYCLES.CURING_TABLE.${index}.START_TIME`;
+                const endDatePath = `CURING_CYCLES.CURING_TABLE.${index}.END_DATE`;
+                const endTimePath = `CURING_CYCLES.CURING_TABLE.${index}.END_TIME`;
+                const reading1 = `CURING_CYCLES.CURING_TABLE.${index}.PROPELLANT_PRESSURE.READING1`;
+                const reading2 = `CURING_CYCLES.CURING_TABLE.${index}.PROPELLANT_PRESSURE.READING2`;
+                const waterStatusPath = `CURING_CYCLES.CURING_TABLE.${index}.HOT_WATER_STATUS`;
+                const startError =
+                  validationErrors?.[startDatePath] || validationErrors?.[startTimePath];
+                const endError = validationErrors?.[endDatePath] || validationErrors?.[endTimePath];
+                const startDateTime = joinDateTime(row.START_DATE, row.START_TIME);
+                const endDateTime = joinDateTime(row.END_DATE, row.END_TIME);
+                const duration = elapsedMinutes(startDateTime, endDateTime);
+
+                return (
+                  <TableRow key={`cycle-${row.srNo || index}`} sx={castingCuringTableRowSx(index)}>
+                    <TableCell sx={{ ...castingCuringTableCellSx, fontWeight: 600 }}>
+                      {row.srNo || index + 1}
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <TableTextInput
+                        value={row.TEMPERATURE}
+                        onChange={(v) => {
+                          clearFieldError?.(tempPath);
+                          updateCycleRow(index, { TEMPERATURE: v });
+                        }}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        type="number"
+                        required
+                        fieldPath={tempPath}
+                        error={Boolean(validationErrors?.[tempPath])}
+                        helperText={validationErrors?.[tempPath]}
+                      />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <TableTextInput
+                        value={row.TIME}
+                        onChange={(v) => {
+                          clearFieldError?.(timePath);
+                          updateCycleRow(index, { TIME: v });
+                        }}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        type="number"
+                        required
+                        fieldPath={timePath}
+                        error={Boolean(validationErrors?.[timePath])}
+                        helperText={validationErrors?.[timePath]}
+                      />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <CompactDateTime
+                        value={startDateTime}
+                        onChange={(v) => {
+                          clearFieldError?.(startDatePath);
+                          clearFieldError?.(startTimePath);
+                          const parts = splitDateTime(v);
+                          updateCycleRow(index, { START_DATE: parts.date, START_TIME: parts.time });
+                        }}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        required
+                        fieldPath={startDatePath}
+                        error={Boolean(startError)}
+                        helperText={startError}
+                      />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <CompactDateTime
+                        value={endDateTime}
+                        minDate={startDateTime}
+                        onChange={(v) => {
+                          clearFieldError?.(endDatePath);
+                          clearFieldError?.(endTimePath);
+                          const parts = splitDateTime(v);
+                          updateCycleRow(index, { END_DATE: parts.date, END_TIME: parts.time });
+                        }}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        required
+                        fieldPath={endDatePath}
+                        error={Boolean(endError)}
+                        helperText={endError}
+                      />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <Box display="flex" gap={1.5} alignItems="center">
+                        <TableTextInput
+                          value={row.PROPELLANT_PRESSURE?.READING1 ?? ""}
+                          onChange={(v) => {
+                            clearFieldError?.(reading1);
+                            updateCycleRow(index, {
+                              PROPELLANT_PRESSURE: {
+                                ...row.PROPELLANT_PRESSURE,
+                                READING1: v,
+                              },
+                            });
+                          }}
+                          disabled={disabled}
+                          readOnly={readOnly}
+                          type="number"
+                          fieldPath={reading1}
+                          error={Boolean(validationErrors?.[reading1])}
+                          helperText={validationErrors?.[reading1]}
+                        />
+
+                        <TableTextInput
+                          value={row.PROPELLANT_PRESSURE?.READING2 ?? ""}
+                          onChange={(v) => {
+                            clearFieldError?.(reading2);
+                            updateCycleRow(index, {
+                              PROPELLANT_PRESSURE: {
+                                ...row.PROPELLANT_PRESSURE,
+                                READING2: v,
+                              },
+                            });
+                          }}
+                          disabled={disabled}
+                          readOnly={readOnly}
+                          type="number"
+                          fieldPath={reading2}
+                          error={Boolean(validationErrors?.[reading2])}
+                          helperText={validationErrors?.[reading2]}
+                        />
+                      </Box>
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <TableSelectInput
+                        value={str(row.HOT_WATER_STATUS)}
+                        onChange={(v) => {
+                          clearFieldError?.(waterStatusPath);
+                          updateCycleRow(index, { HOT_WATER_STATUS: v });
+                        }}
+                        options={[...HOT_WATER_STATUS_OPTIONS]}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        required
+                        fieldPath={waterStatusPath}
+                        error={Boolean(validationErrors?.[waterStatusPath])}
+                        helperText={validationErrors?.[waterStatusPath]}
+                      />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <TableTextInput value={duration} readOnly disabled type="number" />
+                    </TableCell>
+                    <TableCell sx={castingCuringTableCellSx}>
+                      <TableTextInput
+                        value={row.REMARKS}
+                        onChange={(v) => updateCycleRow(index, { REMARKS: v })}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                        multiline
+                        minRows={1}
+                      />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </SectionCard>
+
+      <SectionCard title="Section C: Post Curing Details" theme={theme}>
+        <FieldGrid columns={2}>
+          <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
+            <FieldLabelWithAsterisk label="Any Other Observations" required />
+            <TableTextInput
+              value={post.OTHER_OBSERVATIONS}
+              onChange={(v) => {
+                clearFieldError?.("POST_CURING_DETAILS.OTHER_OBSERVATIONS");
+                patchSection("POST_CURING_DETAILS", { OTHER_OBSERVATIONS: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              multiline
+              minRows={2}
+              placeholder="Any other observations"
+              required
+              fieldPath={"POST_CURING_DETAILS.OTHER_OBSERVATIONS"}
+              error={Boolean(validationErrors?.["POST_CURING_DETAILS.OTHER_OBSERVATIONS"])}
+              helperText={validationErrors?.["POST_CURING_DETAILS.OTHER_OBSERVATIONS"]}
+            />
+          </Box>
+          <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
+            <FieldLabelWithAsterisk label="Visual Observation Of Cured Motor" required />
+            <TableTextInput
+              value={post.VISUAL_OBSERVATION}
+              onChange={(v) => {
+                clearFieldError?.("POST_CURING_DETAILS.VISUAL_OBSERVATION");
+                patchSection("POST_CURING_DETAILS", { VISUAL_OBSERVATION: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              multiline
+              minRows={2}
+              placeholder="Visual observation"
+              required
+              fieldPath={"POST_CURING_DETAILS.VISUAL_OBSERVATION"}
+              error={Boolean(validationErrors?.["POST_CURING_DETAILS.VISUAL_OBSERVATION"])}
+              helperText={validationErrors?.["POST_CURING_DETAILS.VISUAL_OBSERVATION"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabel>Date & Time Of Removal Of Pressure Plate</FieldLabel>
+            <CompactDateTime
+              value={post.PRESSURE_PLATE_REMOVAL_DATE_TIME}
+              onChange={(v) => {
+                clearFieldError?.("POST_CURING_DETAILS.PRESSURE_PLATE_REMOVAL_DATE_TIME");
+                patchSection("POST_CURING_DETAILS", { PRESSURE_PLATE_REMOVAL_DATE_TIME: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              required
+              fieldPath="POST_CURING_DETAILS.PRESSURE_PLATE_REMOVAL_DATE_TIME"
+              error={Boolean(
+                validationErrors?.["POST_CURING_DETAILS.PRESSURE_PLATE_REMOVAL_DATE_TIME"],
+              )}
+              helperText={
+                validationErrors?.["POST_CURING_DETAILS.PRESSURE_PLATE_REMOVAL_DATE_TIME"]
+              }
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="Hardness (Shore A)" required />
+            <TableTextInput
+              value={post.SHORE_A_HARDNESS}
+              onChange={(v) => {
+                clearFieldError?.("POST_CURING_DETAILS.SHORE_A_HARDNESS");
+                patchSection("POST_CURING_DETAILS", { SHORE_A_HARDNESS: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              type="text"
+              placeholder="0"
+              required
+              fieldPath={"POST_CURING_DETAILS.SHORE_A_HARDNESS"}
+              error={Boolean(validationErrors?.["POST_CURING_DETAILS.SHORE_A_HARDNESS"])}
+              helperText={validationErrors?.["POST_CURING_DETAILS.SHORE_A_HARDNESS"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="Date & Time Of Dispatch For De-coring" required />
+            <CompactDateTime
+              value={post.DE_CORING_DISPATCH_DATE_TIME}
+              onChange={(v) => {
+                clearFieldError?.("POST_CURING_DETAILS.DE_CORING_DISPATCH_DATE_TIME");
+                patchSection("POST_CURING_DETAILS", { DE_CORING_DISPATCH_DATE_TIME: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              required
+              fieldPath="POST_CURING_DETAILS.DE_CORING_DISPATCH_DATE_TIME"
+              error={Boolean(
+                validationErrors?.["POST_CURING_DETAILS.DE_CORING_DISPATCH_DATE_TIME"],
+              )}
+              helperText={validationErrors?.["POST_CURING_DETAILS.DE_CORING_DISPATCH_DATE_TIME"]}
+            />
+          </Box>
+        </FieldGrid>
+      </SectionCard>
+
+      <SectionCard title="Section D: De-coring Details" theme={theme} mb={0}>
+        <FieldGrid columns={3}>
+          <Box>
+            <FieldLabelWithAsterisk label="Date & Time Of De-coring" required />
+            <CompactDateTime
+              value={decor.DECORING_DATE}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.DECORING_DATE");
+                patchSection("DECORING_DETAILS", { DECORING_DATE: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              required
+              fieldPath={"DECORING_DETAILS.DECORING_DATE"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.DECORING_DATE"])}
+              helperText={validationErrors?.["DECORING_DETAILS.DECORING_DATE"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="Building No" required />
+            <TableSelectInput
+              value={decor.BUILDING_NO}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.BUILDING_NO");
+                patchSection("DECORING_DETAILS", { BUILDING_NO: v });
+              }}
+              options={buildingOptions}
+              placeholder={
+                loadingBuildings
+                  ? "Loading buildings..."
+                  : buildingOptions.length
+                    ? "Select building"
+                    : "No buildings available"
+              }
+              disabled={disabled || loadingBuildings}
+              readOnly={readOnly}
+              required
+              fieldPath={"DECORING_DETAILS.BUILDING_NO"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.BUILDING_NO"])}
+              helperText={validationErrors?.["DECORING_DETAILS.BUILDING_NO"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="De-coring Load (kg)" required />
+            <TableTextInput
+              value={decor.DECORING_LOAD}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.DECORING_LOAD");
+                patchSection("DECORING_DETAILS", { DECORING_LOAD: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              type="number"
+              placeholder="0"
+              required
+              fieldPath={"DECORING_DETAILS.DECORING_LOAD"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.DECORING_LOAD"])}
+              helperText={validationErrors?.["DECORING_DETAILS.DECORING_LOAD"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="Propellent Temperature (Celcius)" required />
+            <TableTextInput
+              value={decor.PROPELLANT_TEMPERATURE}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.PROPELLANT_TEMPERATURE");
+                patchSection("DECORING_DETAILS", { PROPELLANT_TEMPERATURE: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              type="number"
+              placeholder="0"
+              required
+              fieldPath={"DECORING_DETAILS.PROPELLANT_TEMPERATURE"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.PROPELLANT_TEMPERATURE"])}
+              helperText={validationErrors?.["DECORING_DETAILS.PROPELLANT_TEMPERATURE"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="RH (%)" required />
+            <TableTextInput
+              value={decor.RH}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.RH");
+                patchSection("DECORING_DETAILS", { RH: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              type="number"
+              placeholder="0"
+              required
+              fieldPath={"DECORING_DETAILS.RH"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.RH"])}
+              helperText={validationErrors?.["DECORING_DETAILS.RH"]}
+            />
+          </Box>
+          <Box>
+            <FieldLabelWithAsterisk label="Mandrel Weight (KG)" required />
+
+            <TableTextInput
+              value={decor.MANDREL_WEIGHT}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.MANDREL_WEIGHT");
+                patchSection("DECORING_DETAILS", { MANDREL_WEIGHT: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              type="number"
+              placeholder="0"
+              required
+              fieldPath={"DECORING_DETAILS.MANDREL_WEIGHT"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.MANDREL_WEIGHT"])}
+              helperText={validationErrors?.["DECORING_DETAILS.MANDREL_WEIGHT"]}
+            />
+          </Box>
+
+          <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
+            <FieldLabelWithAsterisk label="Remarks" required />
+            <TableTextInput
+              value={decor.DECORING_REMARKS}
+              onChange={(v) => {
+                clearFieldError?.("DECORING_DETAILS.DECORING_REMARKS");
+                patchSection("DECORING_DETAILS", { DECORING_REMARKS: v });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              multiline
+              minRows={2}
+              placeholder="Remarks"
+              required
+              fieldPath={"DECORING_DETAILS.DECORING_REMARKS"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.DECORING_REMARKS"])}
+              helperText={validationErrors?.["DECORING_DETAILS.DECORING_REMARKS"]}
+            />
+          </Box>
+          <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
+            <CastingCuringFileField
+              label={(<FieldLabelWithAsterisk label="Visual Observations" required />) as any}
+              files={decor.DECORING_VISUAL_OBSERVATION ?? []}
+              onChange={(next) => {
+                clearFieldError?.("DECORING_DETAILS.DECORING_VISUAL_OBSERVATION");
+                patchSection("DECORING_DETAILS", { DECORING_VISUAL_OBSERVATION: next });
+              }}
+              disabled={disabled}
+              readOnly={readOnly}
+              multiple
+              acceptMode="imageVideo"
+              emptyLabel="Upload photos or videos"
+              required
+              fieldPath={"DECORING_DETAILS.DECORING_VISUAL_OBSERVATION"}
+              error={Boolean(validationErrors?.["DECORING_DETAILS.DECORING_VISUAL_OBSERVATION"])}
+              helperText={validationErrors?.["DECORING_DETAILS.DECORING_VISUAL_OBSERVATION"]}
+            />
+          </Box>
+        </FieldGrid>
+      </SectionCard>
+    </Box>
+  );
+};
+
+export default CuringMotorPanel;

@@ -1,0 +1,835 @@
+import { memo, type ChangeEvent, type CSSProperties, type ComponentType } from "react";
+import {
+  Box,
+  MenuItem,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+} from "@mui/material";
+import UploadFileIcon from "@mui/icons-material/UploadFile";
+import FormInput from "../../../../../components/common/FormInput";
+import { DateTimeField } from "../../../../../components/common/DateField";
+import {
+  APP_CONTROL_FONT_SIZE,
+  appDropdownMenuProps,
+  appDropdownPlaceholderSx,
+} from "../../../../../components/common/fieldStyles";
+import { toUiDateTime } from "../../../../../../data/models/user/castingCuringFieldCodec";
+import { FILE_PICKER_ACCEPT } from "../../../../../../utils/FileUtils";
+import { SUBSCALE_BRAND } from "../../../../../../app/theme/custom_themes/user/manufacturing/subscale_theme";
+import {
+  ARTICLE_TYPE_TABLE_ID,
+  RUBBER_MATERIAL_OPTIONS,
+} from "../../../../../../hooks/user/manufacturing/subscaleHardwareConfig";
+import { SubscaleTableTextCell, type SubscaleCellChangeHandler } from "./SubscaleTableCells";
+import {
+  articleTypeCellSx,
+  bemNoTextSx,
+  formatArticleTypeLabel,
+  tableBodyCellSx,
+  tableHeaderCellSx,
+} from "../utils/subscaleHardwareTableStyles";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+
+type RowsProps = {
+  rows: any[];
+  onCellChange: SubscaleCellChangeHandler;
+  fallbackDate?: unknown;
+  getSyncedBemNo?: (rowIndex: number) => string;
+  /** Article Type MOULD_NO mirrored into Casting Mould No (same row). */
+  getSyncedMouldNo?: (rowIndex: number) => string;
+  errors?: Record<string, string> | null;
+  clearFieldError?: (path: string) => void; // <-- Add this
+};
+
+const toSubscaleUiDateTime = (value: unknown, fallbackDate?: unknown): string => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)) {
+    const date = toUiDateTime(fallbackDate).slice(0, 10);
+    return date ? `${date} ${raw.slice(0, 5)}` : "";
+  }
+  const formatted = toUiDateTime(raw);
+  return /^\d{1,2}-\d{1,2}-\d{4}$/.test(formatted) ? `${formatted} 00:00` : formatted;
+};
+
+export const ArticleTypeTableSection = memo(function ArticleTypeTableSection({
+  rows,
+  onCellChange,
+  errors,
+  clearFieldError,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Rubber Material" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Sleeve No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Mould No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Length</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Thickness</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Liner Applied</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Observations</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const errMap = errors as Record<string, any>;
+            const fieldPath = `ARTICLE_TYPE_TABLE.${idx}.RUBBER_MATERIAL`;
+            const fieldError = errMap?.[fieldPath];
+            const sleeveNoError = errMap?.[`ARTICLE_TYPE_TABLE.${idx}.SLEEVE_NO`];
+            const mouldNoError = errMap?.[`ARTICLE_TYPE_TABLE.${idx}.MOULD_NO`];
+            const sizeMmError = errMap?.[`ARTICLE_TYPE_TABLE.${idx}.SIZE_MM`];
+            const linerAppliedError = errMap?.[`ARTICLE_TYPE_TABLE.${idx}.LINER_APPLIED`];
+            const observationsError = errMap?.[`ARTICLE_TYPE_TABLE.${idx}.OBSERVATIONS`];
+            return (
+              <TableRow key={idx}>
+                <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+                <TableCell sx={articleTypeCellSx}>
+                  {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+                </TableCell>
+                <TableCell sx={{ minWidth: 160, ...tableBodyCellSx }}>
+                  <Box data-ss-field={fieldPath}>
+                    <FormInput
+                      select
+                      compact
+                      value={row.RUBBER_MATERIAL ?? ""}
+                      onChange={(e) => {
+                        clearFieldError?.(`ARTICLE_TYPE_TABLE.${idx}.RUBBER_MATERIAL`);
+                        onCellChange(ARTICLE_TYPE_TABLE_ID, idx, "RUBBER_MATERIAL", e.target.value);
+                      }}
+                      error={!!fieldError}
+                      helperText={fieldError || ""}
+                      SelectProps={{ displayEmpty: true, MenuProps: appDropdownMenuProps }}
+                    >
+                      <MenuItem value="">
+                        <em
+                          style={
+                            { ...appDropdownPlaceholderSx, fontStyle: "normal" } as CSSProperties
+                          }
+                        >
+                          Select Rubber Material
+                        </em>
+                      </MenuItem>
+                      {RUBBER_MATERIAL_OPTIONS.map((opt) => (
+                        <MenuItem key={opt} value={opt} sx={{ fontSize: APP_CONTROL_FONT_SIZE }}>
+                          {opt}
+                        </MenuItem>
+                      ))}
+                    </FormInput>
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="SLEEVE_NO"
+                    value={row.SLEEVE_NO ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={sleeveNoError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="MOULD_NO"
+                    value={row.MOULD_NO ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={mouldNoError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="SIZE_MM"
+                    value={row.SIZE_MM ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={sizeMmError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="THICKNESS_MM"
+                    value={row.THICKNESS_MM ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errMap?.[`ARTICLE_TYPE_TABLE.${idx}.THICKNESS_MM`]}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="LINER_APPLIED"
+                    value={row.LINER_APPLIED ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={linerAppliedError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId={ARTICLE_TYPE_TABLE_ID}
+                    rowIndex={idx}
+                    fieldId="OBSERVATIONS"
+                    value={row.OBSERVATIONS ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={observationsError}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+export const TrimmingTableSection = memo(function TrimmingTableSection({
+  rows,
+  onCellChange,
+  errors,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>HE Side OD</TableCell>
+            <TableCell sx={tableHeaderCellSx}>HE Port Inner</TableCell>
+            <TableCell sx={tableHeaderCellSx}>HE Port Outer</TableCell>
+            <TableCell sx={tableHeaderCellSx}>HE Before Inhib. In</TableCell>
+            <TableCell sx={tableHeaderCellSx}>HE Before Inhib. Out</TableCell>
+            <TableCell sx={tableHeaderCellSx}>NE Side OD</TableCell>
+            <TableCell sx={tableHeaderCellSx}>NE Port Inner</TableCell>
+            <TableCell sx={tableHeaderCellSx}>NE Port Outer</TableCell>
+            <TableCell sx={tableHeaderCellSx}>NE Web Inner</TableCell>
+            <TableCell sx={tableHeaderCellSx}>NE Web Outer</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Length Before Inhib.</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => (
+            <TableRow key={idx}>
+              <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+              <TableCell sx={articleTypeCellSx}>
+                {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+              </TableCell>
+              <TableCell sx={bemNoTextSx}>
+                <Box data-ss-field={`TRIMMING_TABLE.${idx}.BEM_NO`}>
+                  {String(row.BEM_NO ?? "").trim() || "—"}
+                </Box>
+              </TableCell>
+              {(
+                [
+                  "HE_OD",
+                  "HE_PORT_INNER",
+                  "HE_PORT_OUTER",
+                  "HE_BEFORE_INHIBITION_INNER",
+                  "HE_BEFORE_INHIBITION_OUTER",
+                  "NE_OD",
+                  "NE_PORT_INNER",
+                  "NE_PORT_OUTER",
+                  "NE_WEB_INNER",
+                  "NE_WEB_OUTER",
+                  "LENGTH_BEFORE_INHIBITION",
+                ] as const
+              ).map((fieldId) => {
+                const fieldError = errors?.[`TRIMMING_TABLE.${idx}.${fieldId}`];
+                return (
+                  <TableCell key={fieldId} sx={tableBodyCellSx}>
+                    <SubscaleTableTextCell
+                      compact
+                      tableId="TRIMMING_TABLE"
+                      rowIndex={idx}
+                      fieldId={fieldId}
+                      value={row[fieldId] ?? ""}
+                      onCellChange={onCellChange}
+                      errorMessage={fieldError}
+                    />
+                  </TableCell>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+export const CastingTableSection = memo(function CastingTableSection({
+  rows,
+  onCellChange,
+  fallbackDate,
+  getSyncedMouldNo = () => "",
+  errors,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article No / BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Mould No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Casting Pit No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Casting Start Date &amp; Time</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Casting End Date &amp; Time</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Vacuum Level" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Remarks</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const errMap = errors as Record<string, any>;
+
+            const bemNoError = errMap?.[`CASTING_TABLE.${idx}.BEM_NO`];
+            const bemMouldError = errMap?.[`CASTING_TABLE.${idx}.BEM_MOULD_NO`];
+            const castingPitError = errMap?.[`CASTING_TABLE.${idx}.CASTING_PIT_NO`];
+            const startError = errMap?.[`CASTING_TABLE.${idx}.CASTING_START_TIME`];
+            const endError = errMap?.[`CASTING_TABLE.${idx}.CASTING_END_TIME`];
+            const vacuumError = errMap?.[`CASTING_TABLE.${idx}.VACUUM_LEVEL`];
+            const remarksError = errMap?.[`CASTING_TABLE.${idx}.REMARKS`];
+            return (
+              <TableRow key={idx}>
+                <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+                <TableCell sx={articleTypeCellSx}>
+                  {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CASTING_TABLE"
+                    rowIndex={idx}
+                    fieldId="BEM_NO"
+                    value={row.BEM_NO ?? ""}
+                    onCellChange={onCellChange}
+                    required
+                    errorMessage={bemNoError}
+                  />
+                </TableCell>
+                <TableCell
+                  sx={{
+                    ...bemNoTextSx,
+                    ...(bemMouldError
+                      ? { color: "error.main", outline: "1px solid", outlineColor: "error.main" }
+                      : null),
+                  }}
+                >
+                  <Box data-ss-field={`CASTING_TABLE.${idx}.BEM_MOULD_NO`}>
+                    {getSyncedMouldNo(idx) || row.BEM_MOULD_NO || "—"}
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CASTING_TABLE"
+                    rowIndex={idx}
+                    fieldId="CASTING_PIT_NO"
+                    value={row.CASTING_PIT_NO ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={castingPitError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={`CASTING_TABLE.${idx}.CASTING_START_TIME`}>
+                    <DateTimeField
+                      compact
+                      value={toSubscaleUiDateTime(row.CASTING_START_TIME, fallbackDate)}
+                      onChange={(next) => {
+                        onCellChange("CASTING_TABLE", idx, "CASTING_START_TIME", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!startError}
+                      helperText={startError || ""}
+                    />
+                  </Box>
+                </TableCell>
+
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={`CASTING_TABLE.${idx}.CASTING_END_TIME`}>
+                    <DateTimeField
+                      compact
+                      value={toSubscaleUiDateTime(row.CASTING_END_TIME, fallbackDate)}
+                      minDate={toSubscaleUiDateTime(row.CASTING_START_TIME, fallbackDate)}
+                      onChange={(next) => {
+                        onCellChange("CASTING_TABLE", idx, "CASTING_END_TIME", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!endError}
+                      helperText={endError || ""}
+                    />
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CASTING_TABLE"
+                    rowIndex={idx}
+                    fieldId="VACUUM_LEVEL"
+                    value={row.VACUUM_LEVEL ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={vacuumError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CASTING_TABLE"
+                    rowIndex={idx}
+                    fieldId="REMARKS"
+                    value={row.REMARKS ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={remarksError}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+type StaticTestingProps = RowsProps & {
+  onFileUpload: (rowIndex: number, file: File) => void;
+  FileUploadButton: ComponentType<any>;
+};
+
+export const StaticTestingTableSection = memo(function StaticTestingTableSection({
+  rows,
+  onCellChange,
+  errors,
+  onFileUpload,
+  FileUploadButton,
+}: StaticTestingProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Prop Mass</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Dt</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Web Thk</TableCell>
+            <TableCell sx={tableHeaderCellSx}>n Value</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Pr Avg</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Th Avg</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Burn Rate</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Upload Graph</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const bemError = errors?.[`STATIC_TESTING_TABLE.${idx}.BEM_NO`];
+            return (
+              <TableRow key={idx}>
+                <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+                <TableCell sx={articleTypeCellSx}>
+                  {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+                </TableCell>
+                <TableCell
+                  sx={{
+                    ...bemNoTextSx,
+                    ...(bemError
+                      ? { color: "error.main", outline: "1px solid", outlineColor: "error.main" }
+                      : null),
+                  }}
+                >
+                  <Box data-ss-field={`STATIC_TESTING_TABLE.${idx}.BEM_NO`}>
+                    {String(row.BEM_NO ?? "").trim() || "—"}
+                  </Box>
+                </TableCell>
+                {(
+                  [
+                    "PROPELLANT_MASS",
+                    "DT",
+                    "WEB_THICKNESS",
+                    "N_VALUE",
+                    "PRESSURE_AVG",
+                    "THRUST_AVG",
+                    "BURN_RATE",
+                  ] as const
+                ).map((fieldId) => (
+                  <TableCell key={fieldId} sx={tableBodyCellSx}>
+                    <SubscaleTableTextCell
+                      compact
+                      type="number"
+                      tableId="STATIC_TESTING_TABLE"
+                      rowIndex={idx}
+                      fieldId={fieldId}
+                      value={row[fieldId] ?? ""}
+                      onCellChange={onCellChange}
+                      errorMessage={errors?.[`STATIC_TESTING_TABLE.${idx}.${fieldId}`]}
+                    />
+                  </TableCell>
+                ))}
+                <TableCell sx={{ minWidth: 180 }}>
+                  <FileUploadButton
+                    icon={UploadFileIcon}
+                    label={row.GRAPH_UPLOAD ? row.GRAPH_UPLOAD.name : "Upload Graph"}
+                    accept={FILE_PICKER_ACCEPT.IMAGE_PDF}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                      const file = e.target.files?.[0];
+                      if (file) onFileUpload(idx, file);
+                    }}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+export const MechanicalPropertiesTableSection = memo(function MechanicalPropertiesTableSection({
+  rows,
+  onCellChange,
+  getSyncedBemNo = () => "",
+  errors,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>TS</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Elong</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Modulus</TableCell>
+            <TableCell sx={tableHeaderCellSx}>SBS</TableCell>
+            <TableCell sx={tableHeaderCellSx}>TBS</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Peel Strength</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Density</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Actor</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const bemError = errors?.[`MECHANICAL_PROPERTIES_TABLE.${idx}.BEM_NO`];
+            return (
+            <TableRow key={idx}>
+              <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+              <TableCell sx={articleTypeCellSx}>
+                {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+              </TableCell>
+              <TableCell
+                sx={{
+                  ...bemNoTextSx,
+                  ...(bemError
+                    ? { color: "error.main", outline: "1px solid", outlineColor: "error.main" }
+                    : null),
+                }}
+              >
+                <Box data-ss-field={`MECHANICAL_PROPERTIES_TABLE.${idx}.BEM_NO`}>
+                  {getSyncedBemNo(idx) || "—"}
+                </Box>
+              </TableCell>
+              {(
+                [
+                  ["TS", true],
+                  ["ELONGATION", true],
+                  ["MODULUS", true],
+                  ["SBS", true],
+                  ["TBS", true],
+                  ["PEEL_STRENGTH", true],
+                  ["DENSITY", true],
+                  ["ACTOR", false],
+                ] as const
+              ).map(([fieldId, isNumber]) => (
+                <TableCell key={fieldId} sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    type={isNumber ? "number" : undefined}
+                    tableId="MECHANICAL_PROPERTIES_TABLE"
+                    rowIndex={idx}
+                    fieldId={fieldId}
+                    value={row[fieldId] ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errors?.[`MECHANICAL_PROPERTIES_TABLE.${idx}.${fieldId}`]}
+                  />
+                </TableCell>
+              ))}
+            </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+export const CuringTableSection = memo(function CuringTableSection({
+  rows,
+  onCellChange,
+  getSyncedBemNo = () => "",
+  errors,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article No / BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Curing Start Date &amp; Time</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Curing End Date &amp; Time</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Oven No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Temperature (°C)</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Hardness</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Decoring Date &amp; Time</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Decoring Load</TableCell>
+            <TableCell sx={tableHeaderCellSx}>Grain Surface Obs.</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const startError = errors?.[`CURING_TABLE.${idx}.CURING_START_DATE`];
+            const endError = errors?.[`CURING_TABLE.${idx}.CURING_END_DATE`];
+            const decorError = errors?.[`CURING_TABLE.${idx}.DECORING_DATE`];
+            const ovenNoError = errors?.[`CURING_TABLE.${idx}.OVEN_NO`];
+            const grainObsError = errors?.[`CURING_TABLE.${idx}.GRAIN_SURFACE_OBSERVATIONS`];
+
+            return (
+              <TableRow key={idx}>
+                <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+                <TableCell sx={articleTypeCellSx}>
+                  {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+                </TableCell>
+                <TableCell sx={bemNoTextSx}>{getSyncedBemNo(idx) || "—"}</TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={`CURING_TABLE.${idx}.CURING_START_DATE`}>
+                    <DateTimeField
+                      compact
+                      value={toSubscaleUiDateTime(row.CURING_START_DATE)}
+                      onChange={(next) => {
+                        onCellChange("CURING_TABLE", idx, "CURING_START_DATE", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!startError}
+                      helperText={startError || ""}
+                    />
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={`CURING_TABLE.${idx}.CURING_END_DATE`}>
+                    <DateTimeField
+                      compact
+                      value={toSubscaleUiDateTime(row.CURING_END_DATE)}
+                      minDate={toSubscaleUiDateTime(row.CURING_START_DATE)}
+                      onChange={(next) => {
+                        onCellChange("CURING_TABLE", idx, "CURING_END_DATE", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!endError}
+                      helperText={endError || ""}
+                    />
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CURING_TABLE"
+                    rowIndex={idx}
+                    fieldId="OVEN_NO"
+                    value={row.OVEN_NO ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={ovenNoError}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CURING_TABLE"
+                    rowIndex={idx}
+                    fieldId="TEMPERATURE"
+                    value={row.TEMPERATURE ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errors?.[`CURING_TABLE.${idx}.TEMPERATURE`]}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CURING_TABLE"
+                    rowIndex={idx}
+                    fieldId="HARDNESS"
+                    value={row.HARDNESS ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errors?.[`CURING_TABLE.${idx}.HARDNESS`]}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={`CURING_TABLE.${idx}.DECORING_DATE`}>
+                    <DateTimeField
+                      compact
+                      value={toSubscaleUiDateTime(row.DECORING_DATE)}
+                      onChange={(next) => {
+                        onCellChange("CURING_TABLE", idx, "DECORING_DATE", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!decorError}
+                      helperText={decorError || ""}
+                    />
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CURING_TABLE"
+                    rowIndex={idx}
+                    fieldId="DECORING_LOAD"
+                    value={row.DECORING_LOAD ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errors?.[`CURING_TABLE.${idx}.DECORING_LOAD`]}
+                  />
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="CURING_TABLE"
+                    rowIndex={idx}
+                    fieldId="GRAIN_SURFACE_OBSERVATIONS"
+                    value={row.GRAIN_SURFACE_OBSERVATIONS ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={grainObsError}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});
+
+export const NdtTableSection = memo(function NdtTableSection({
+  rows,
+  onCellChange,
+  getSyncedBemNo = () => "",
+  errors,
+}: RowsProps) {
+  return (
+    <TableContainer sx={{ border: `1px solid ${SUBSCALE_BRAND.border}`, borderRadius: 2 }}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={tableHeaderCellSx}>Sr No</TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Article Type" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="BEM No" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>
+              <FieldLabelWithAsterisk label="Date & Time Of NDT" required sx={tableHeaderCellSx} />
+            </TableCell>
+            <TableCell sx={tableHeaderCellSx}>Observations</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, idx) => {
+            const ndtDatePath = `NDT_TABLE.${idx}.DATE_OF_NDT`;
+            const ndtError = errors?.[ndtDatePath];
+            return (
+              <TableRow key={idx}>
+                <TableCell sx={tableBodyCellSx}>{idx + 1}</TableCell>
+                <TableCell sx={articleTypeCellSx}>
+                  {formatArticleTypeLabel(row.ARTICLE_TYPE)}
+                </TableCell>
+                <TableCell sx={bemNoTextSx}>{getSyncedBemNo(idx) || "—"}</TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <Box data-ss-field={ndtDatePath}>
+                    <DateTimeField
+                      compact
+                      required
+                      value={toSubscaleUiDateTime(row.DATE_OF_NDT)}
+                      onChange={(next) => {
+                        onCellChange("NDT_TABLE", idx, "DATE_OF_NDT", next);
+                      }}
+                      placeholder="DD-MM-YYYY HH:mm"
+                      error={!!ndtError}
+                      helperText={ndtError || ""}
+                    />
+                  </Box>
+                </TableCell>
+                <TableCell sx={tableBodyCellSx}>
+                  <SubscaleTableTextCell
+                    compact
+                    tableId="NDT_TABLE"
+                    rowIndex={idx}
+                    fieldId="OBSERVATIONS"
+                    value={row.OBSERVATIONS ?? ""}
+                    onCellChange={onCellChange}
+                    errorMessage={errors?.[`NDT_TABLE.${idx}.OBSERVATIONS`]}
+                  />
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+});

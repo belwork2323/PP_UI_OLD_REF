@@ -1,0 +1,728 @@
+import { pickField } from "@/data/models/user/castingCuringFieldCodec";
+import type { CastingMotorData } from "@/data/models/user/CastingMotorDataModel";
+import type { SubDeptValidationConfig } from "../runValidation";
+import type { ValidationTier } from "../submissionIntent";
+import { assertFromToOrderInTree } from "../dateRangeValidation";
+import { VALIDATIONSTRING } from "./validationString";
+
+const S = VALIDATIONSTRING;
+
+export const castingCuringFieldRules = {
+  feedReading: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  postDetailsDateTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  // Mandrel measurements (assembly details)
+  mandrelAMock: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  mandrelBMock: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  mandrelBFinal: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  mandrelBellowsThicknessD: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  emptyMotorWeight: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  vacuumApplied: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHANUMERIC,
+  },
+  bowlId: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    // pattern: S.PATTERNS.CASTING_BOWL_LABEL,
+    minLength: 1,
+    maxLength: 100,
+  },
+  bowlReceiptTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  initialWeight: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  finalWeight: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  ballValveOpenTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: {
+      required: S.REQUIRED,
+      invalid: S.INVALID,
+    },
+  },
+  slurryDepthAfterDc: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: {
+      required: S.REQUIRED,
+      invalid: S.INVALID,
+    },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  dcCloseTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: {
+      required: S.REQUIRED,
+      invalid: S.INVALID,
+    },
+  },
+  dcOpenTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: {
+      required: S.REQUIRED,
+      invalid: S.INVALID,
+    },
+  },
+  timeInterval: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"] as ValidationTier[],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  rh: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  viscosity: {
+    valueType: "number" as const,
+    requiredIn: [],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  slurryCast: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  // slurryDepth: {
+  //   valueType: "number" as const,
+  //   requiredIn: ["SUBMIT"],
+  //   messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  //   pattern: S.PATTERNS.FLOAT,
+  // },
+  flowRate: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  valveOpening: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  vacuumLevel: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  initialVacuum: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  vacuumPressureCasting: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  vacuumPressureSoaking: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  tdiClearanceAfterVacuum: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  fmMotorLabel: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    // pattern: S.PATTERNS.CASTING_BOWL_LABEL,
+    minLength: 1,
+    maxLength: 100,
+  },
+  /** Casting-from-bowl MOTOR_ID — auto-synced motor identifier, not a bowl label. */
+  castingMotorId: {
+    valueType: "text" as const,
+    requiredIn: ["UNIT", "SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: 50,
+  },
+  postActivity: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: S.LENGTH.MAX_STANDARD,
+  },
+  postDetails: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: S.LENGTH.MAX_LONG_TEXT,
+  },
+  // Curing — cycle rows
+  curingTemperature: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  curingTime: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  curingStartDate: {
+    valueType: "date" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  curingStartTime: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: 20,
+  },
+  curingEndDate: {
+    valueType: "date" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  curingEndTime: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: 20,
+  },
+  propellantPressure: {
+    valueType: "number" as const,
+    requiredIn: [],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  hotWaterStatus: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: S.LENGTH.MAX_STANDARD,
+  },
+  // Post-curing details
+  postOtherObservations: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: S.LENGTH.MAX_LONG_TEXT,
+  },
+  postVisualObservation: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: S.LENGTH.MAX_LONG_TEXT,
+  },
+  pressurePlateRemovalDateTime: {
+    valueType: "datetime" as const,
+    requiredIn: [],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: 30,
+  },
+  shoreAHardness: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    pattern: S.PATTERNS.ALPHANUMERIC,
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: S.LENGTH.MAX_STANDARD,
+  },
+  deCoringDispatchDateTime: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    maxLength: 30,
+  },
+  // De-coring details
+  deCoringDate: {
+    valueType: "datetime" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+  buildingNo: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    // Dropdown stores building code (e.g. BLD-1), not display name (14G)
+    pattern: S.PATTERNS.BUILDING_CODE,
+    maxLength: 50,
+  },
+  deCoringLoad: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  propellantProperties: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  mandrelWeight: {
+    valueType: "number" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.FLOAT,
+  },
+  deCoringRemarks: {
+    valueType: "text" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+    pattern: S.PATTERNS.ALPHABET_WITH_SPECIAL,
+    maxLength: S.LENGTH.MAX_LONG_TEXT,
+  },
+  deCoringVisualObservation: {
+    valueType: "file" as const,
+    requiredIn: ["SUBMIT"],
+    messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+  },
+};
+const isSlurryTotalValidationRow = (row: { ROW_KEY?: unknown; FM_MOTOR_LABEL?: unknown }) => {
+  const rowKey = String(row?.ROW_KEY ?? "")
+    .trim()
+    .toUpperCase();
+  const label = String(row?.FM_MOTOR_LABEL ?? "")
+    .trim()
+    .toLowerCase();
+  return rowKey === "TOTAL" || label === "total slurry cast";
+};
+
+type ResolvedFieldPath = { path: string; value: unknown; ruleKey: string };
+
+function resolveCastingFieldPaths(data: any): ResolvedFieldPath[] {
+  const paths: ResolvedFieldPath[] = [];
+  const castingProcess =
+    (data?.CASTING_PROCESS as Record<string, unknown> | undefined) ??
+    (data?.castingProcess as Record<string, unknown> | undefined) ??
+    {};
+
+  // feed readings
+  const casing = data.FINAL_ASSEMBLY_DETAILS?.motorCasing?.[0];
+  if (casing) {
+    (casing.MANDREL_MEASUREMENTS ?? []).forEach((row: any, i: number) => {
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.MANDREL_MEASUREMENTS.${i}.A_MOCK`,
+        value: row.A_MOCK,
+        ruleKey: "mandrelAMock",
+      });
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.MANDREL_MEASUREMENTS.${i}.B_MOCK`,
+        value: row.B_MOCK,
+        ruleKey: "mandrelBMock",
+      });
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.MANDREL_MEASUREMENTS.${i}.B_FINAL`,
+        value: row.B_FINAL,
+        ruleKey: "mandrelBFinal",
+      });
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.MANDREL_MEASUREMENTS.${i}.BELLOWS_THICKNESS_D`,
+        value: row.BELLOWS_THICKNESS_D,
+        ruleKey: "mandrelBellowsThicknessD",
+      });
+    });
+
+    paths.push({
+      path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.EMPTY_MOTOR_WEIGHT`,
+      value: casing.EMPTY_MOTOR_WEIGHT,
+      ruleKey: "emptyMotorWeight",
+    });
+    paths.push({
+      path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.VACUUM_APPLIED`,
+      value: casing.VACUUM_APPLIED,
+      ruleKey: "vacuumApplied",
+    });
+    const feed = casing.FEED_PIPE_DISTANCE?.[0];
+    if (feed) {
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.FEED_PIPE_DISTANCE.0.READING_1`,
+        value: feed.READING_1,
+        ruleKey: "feedReading",
+      });
+      paths.push({
+        path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.FEED_PIPE_DISTANCE.0.READING_2`,
+        value: feed.READING_2,
+        ruleKey: "feedReading",
+      });
+      // paths.push({
+      //   path: `FINAL_ASSEMBLY_DETAILS.motorCasing.0.FEED_PIPE_DISTANCE.0.EMPTY_MOTOR_WEIGHT`,
+      //   value: feed.EMPTY_MOTOR_WEIGHT,
+      //   ruleKey: "emptyMotorWeight",
+      // });
+    }
+  }
+
+  // final mix bowl details
+  (data.CASTING_PROCESS?.FINAL_MIX_BOWL_DETAILS ?? []).forEach((row, i) => {
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.BOWL_ID`,
+      value: row.BOWL_ID,
+      ruleKey: "bowlId",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.BOWL_RECEIPT_TIME`,
+      value: row.BOWL_RECEIPT_TIME,
+      ruleKey: "bowlReceiptTime",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.INITIAL_WEIGHT`,
+      value: row.INITIAL_WEIGHT,
+      ruleKey: "initialWeight",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.FINAL_WEIGHT`,
+      value: row.FINAL_WEIGHT,
+      ruleKey: "finalWeight",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.DC_OPEN_TIME`,
+      value: row.DC_OPEN_TIME,
+      ruleKey: "dcOpenTime",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.DC_CLOSE_TIME`,
+      value: row.DC_CLOSE_TIME,
+      ruleKey: "dcCloseTime",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.SLURRY_DEPTH_AFTER_DC`,
+      value: row.SLURRY_DEPTH_AFTER_DC,
+      ruleKey: "slurryDepthAfterDc",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.FINAL_MIX_BOWL_DETAILS.${i}.BALL_VALVE_OPEN_TIME`,
+      value: row.BALL_VALVE_OPEN_TIME,
+      ruleKey: "ballValveOpenTime",
+    });
+  });
+
+  // casting from bowl details
+  (data.CASTING_PROCESS?.CASTING_FROM_BOWL_DETAILS ?? []).forEach((row, i) => {
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.BOWL_ID`,
+      value: row.BOWL_ID,
+      ruleKey: "bowlId",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.TIME_INTERVAL`,
+      value: row.TIME_INTERVAL,
+      ruleKey: "timeInterval",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.RH`,
+      value: row.RH,
+      ruleKey: "rh",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.VISCOSITY`,
+      value: row.VISCOSITY,
+      ruleKey: "viscosity",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.MOTOR_ID`,
+      value: row.MOTOR_ID,
+      ruleKey: "castingMotorId",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.SLURRY_DEPTH`,
+      value: row.SLURRY_DEPTH,
+      ruleKey: "slurryDepth",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.SLURRY_CAST`,
+      value: row.SLURRY_CAST,
+      ruleKey: "slurryCast",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.FLOW_RATE`,
+      value: row.FLOW_RATE,
+      ruleKey: "flowRate",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.VALVE_OPENING`,
+      value: row.VALVE_OPENING,
+      ruleKey: "valveOpening",
+    });
+    paths.push({
+      path: `CASTING_PROCESS.CASTING_FROM_BOWL_DETAILS.${i}.VACUUM_LEVEL`,
+      value: row.VACUUM_LEVEL,
+      ruleKey: "vacuumLevel",
+    });
+  });
+  console.log(castingProcess);
+
+  paths.push({
+    path: `CASTING_PROCESS.INITIAL_VACUUM`,
+    value: pickField(castingProcess, "initialVacuum", "INITIAL_VACUUM"),
+    ruleKey: "initialVacuum",
+  });
+  paths.push({
+    path: `CASTING_PROCESS.VACUUM_PRESSURE_CASTING`,
+    value: pickField(castingProcess, "vacuumPressureCasting", "VACUUM_PRESSURE_CASTING"),
+    ruleKey: "vacuumPressureCasting",
+  });
+  paths.push({
+    path: `CASTING_PROCESS.VACUUM_PRESSURE_SOAKING`,
+    value: pickField(castingProcess, "vacuumPressureSoaking", "VACUUM_PRESSURE_SOAKING"),
+    ruleKey: "vacuumPressureSoaking",
+  });
+  paths.push({
+    path: `CASTING_PROCESS.TDI_CLEARANCE_AFTER_VACUUM`,
+    value: pickField(castingProcess, "tdiClearanceAfterVacuum", "TDI_CLEARANCE_AFTER_VACUUM"),
+    ruleKey: "tdiClearanceAfterVacuum",
+  });
+
+  // slurry cast rows
+  (data.SLURRY_CAST_DETAILS?.SLURRY_CAST_FROM_BOWLS ?? []).forEach((row, i) => {
+    if (isSlurryTotalValidationRow(row)) return;
+    paths.push({
+      path: `SLURRY_CAST_DETAILS.SLURRY_CAST_FROM_BOWLS.${i}.FM_MOTOR_LABEL`,
+      value: row.FM_MOTOR_LABEL,
+      ruleKey: "fmMotorLabel",
+    });
+    paths.push({
+      path: `SLURRY_CAST_DETAILS.SLURRY_CAST_FROM_BOWLS.${i}.SLURRY_CAST`,
+      value: row.SLURRY_CAST,
+      ruleKey: "slurryCast",
+    });
+  });
+
+  // post cast operations
+  (data.POST_CAST_OPERATIONS?.POST_CAST_TABLE ?? []).forEach((row, i) => {
+    paths.push({
+      path: `POST_CAST_OPERATIONS.POST_CAST_TABLE.${i}.ACTIVITY`,
+      value: row.ACTIVITY,
+      ruleKey: "postActivity",
+    });
+    paths.push({
+      path: `POST_CAST_OPERATIONS.POST_CAST_TABLE.${i}.DETAILS`,
+      value: row.DETAILS,
+      ruleKey:
+        String(row.detailsFieldType ?? "").toLowerCase() === "datetime"
+          ? "postDetailsDateTime"
+          : "postDetails",
+    });
+  });
+
+  return paths;
+}
+
+function resolveCuringFieldPaths(data: any): ResolvedFieldPath[] {
+  const paths: ResolvedFieldPath[] = [];
+
+  // curing cycles table
+  (data.CURING_CYCLES?.CURING_TABLE ?? []).forEach((row: any, i: number) => {
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.TEMPERATURE`,
+      value: row.TEMPERATURE,
+      ruleKey: "curingTemperature",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.TIME`,
+      value: row.TIME,
+      ruleKey: "curingTime",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.START_DATE`,
+      value: row.START_DATE,
+      ruleKey: "curingStartDate",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.START_TIME`,
+      value: row.START_TIME,
+      ruleKey: "curingStartTime",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.END_DATE`,
+      value: row.END_DATE,
+      ruleKey: "curingEndDate",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.END_TIME`,
+      value: row.END_TIME,
+      ruleKey: "curingEndTime",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.PROPELLANT_PRESSURE.READING1`,
+      value: row.PROPELLANT_PRESSURE.READING1,
+      ruleKey: "propellantPressure",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.PROPELLANT_PRESSURE.READING2`,
+      value: row.PROPELLANT_PRESSURE.READING2,
+      ruleKey: "propellantPressure",
+    });
+    paths.push({
+      path: `CURING_CYCLES.CURING_TABLE.${i}.HOT_WATER_STATUS`,
+      value: row.HOT_WATER_STATUS,
+      ruleKey: "hotWaterStatus",
+    });
+  });
+
+  // post-curing details
+  const postCuring = data.POST_CURING_DETAILS;
+  if (postCuring) {
+    paths.push({
+      path: `POST_CURING_DETAILS.OTHER_OBSERVATIONS`,
+      value: postCuring.OTHER_OBSERVATIONS,
+      ruleKey: "postOtherObservations",
+    });
+    paths.push({
+      path: `POST_CURING_DETAILS.VISUAL_OBSERVATION`,
+      value: postCuring.VISUAL_OBSERVATION,
+      ruleKey: "postVisualObservation",
+    });
+    paths.push({
+      path: `POST_CURING_DETAILS.PRESSURE_PLATE_REMOVAL_DATE_TIME`,
+      value: postCuring.PRESSURE_PLATE_REMOVAL_DATE_TIME,
+      ruleKey: "pressurePlateRemovalDateTime",
+    });
+    paths.push({
+      path: `POST_CURING_DETAILS.SHORE_A_HARDNESS`,
+      value: postCuring.SHORE_A_HARDNESS,
+      ruleKey: "shoreAHardness",
+    });
+    paths.push({
+      path: `POST_CURING_DETAILS.DE_CORING_DISPATCH_DATE_TIME`,
+      value: postCuring.DE_CORING_DISPATCH_DATE_TIME,
+      ruleKey: "deCoringDispatchDateTime",
+    });
+  }
+
+  // decoring details
+  const decoring = data.DECORING_DETAILS;
+  if (decoring) {
+    paths.push({
+      path: `DECORING_DETAILS.DECORING_DATE`,
+      value: decoring.DECORING_DATE,
+      ruleKey: "deCoringDate",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.BUILDING_NO`,
+      value: decoring.BUILDING_NO,
+      ruleKey: "buildingNo",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.DECORING_LOAD`,
+      value: decoring.DECORING_LOAD,
+      ruleKey: "deCoringLoad",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.MANDREL_WEIGHT`,
+      value: decoring.MANDREL_WEIGHT,
+      ruleKey: "mandrelWeight",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.RH`,
+      value: decoring.RH,
+      ruleKey: "rh",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.PROPELLANT_TEMPERATURE`,
+      value: decoring.PROPELLANT_TEMPERATURE,
+      ruleKey: "propellantTemperature",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.DECORING_REMARKS`,
+      value: decoring.DECORING_REMARKS,
+      ruleKey: "deCoringRemarks",
+    });
+    paths.push({
+      path: `DECORING_DETAILS.DECORING_VISUAL_OBSERVATION`,
+      value: decoring.DECORING_VISUAL_OBSERVATION,
+      ruleKey: "deCoringVisualObservation",
+    });
+  }
+  return paths;
+}
+
+export const castingMotorValidationConfig: SubDeptValidationConfig<CastingMotorData> = {
+  id: "castingMotor",
+  fields: castingCuringFieldRules as any,
+  resolveFieldPaths: resolveCastingFieldPaths,
+  customRules: [
+    (data, _tier, errors) => {
+      assertFromToOrderInTree(data, errors);
+    },
+  ],
+};
+
+export const curingMotorValidationConfig: SubDeptValidationConfig<unknown> = {
+  id: "curingMotor",
+  fields: castingCuringFieldRules as any,
+  resolveFieldPaths: resolveCuringFieldPaths,
+  customRules: [
+    (data, _tier, errors) => {
+      assertFromToOrderInTree(data, errors);
+    },
+  ],
+};
+
+/** @deprecated Use castingMotorValidationConfig or curingMotorValidationConfig */
+export const castingCuringValidationConfig = castingMotorValidationConfig;
+
+export default castingMotorValidationConfig;

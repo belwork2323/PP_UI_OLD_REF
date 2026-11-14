@@ -1,0 +1,959 @@
+import { useCallback, useMemo, type ReactNode } from "react";
+import {
+  Box,
+  Button,
+  IconButton,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+  alpha,
+} from "@mui/material";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import { QC_DIVISION_BRAND } from "../../../../../app/theme/custom_themes/user/qualityControl/tokens";
+import getManufacturingTheme from "../../../../../app/theme/custom_themes/user/manufacturing/manufacturing_theme";
+import { useThemeStore } from "../../../../../app/store/themeStore";
+import type { SchemaFormValues } from "@/data/models/shared/sectionFormTypes";
+import DateField, { DateTimeField, TimeField } from "../../../../components/common/DateField";
+import AppDropdown from "../../../../components/common/AppDropdown";
+import CasePrepTextField from "../../manufacturing/CasePreparation/CasePrepTextField";
+import { useBuildingOptions } from "../../../../../hooks/user/useBuildingOptions";
+import {
+  QC_HARDWARE_ABRADING_FIRST_CUT_TABLE_ID,
+  QC_HARDWARE_ABRADING_SECOND_CUT_TABLE_ID,
+  QC_HARDWARE_PREHEATING_TABLE_ID,
+  QC_HARDWARE_LINEAR_COATING_TABLE_ID,
+  QC_HARDWARE_DISPATCH_VISUAL_OBSERVATIONS_TABLE_ID,
+  getHardwareAbradingRows,
+  getHardwareDispatchValues,
+  getHardwareDispatchVisualObservationRows,
+  getHardwareLinearCoatingRows,
+  getHardwarePreheatingRows,
+  getHardwareQaRemarks,
+  getQcHardwareProcessLabel,
+  isQcHardwareProcessSubType,
+  setHardwareAbradingRows,
+  setHardwareDispatchValues,
+  setHardwareDispatchVisualObservationRows,
+  setHardwareLinearCoatingRows,
+  setHardwarePreheatingRows,
+  setHardwareQaRemarks,
+  type QcHardwareCutRow,
+  type QcHardwareLinearCoatingRow,
+  type QcHardwarePreheatingRow,
+  type QcHardwareVisualObservationRow,
+} from "../../../../../hooks/user/qualityControl/qcHardwareTables";
+
+import {
+  QCDivisionReadOnlyValue,
+  qcReadOnlyBodyCellSx,
+  qcReadOnlyTableContainerSx,
+  qcReadOnlyTableHeaderCellSx,
+} from "./components/QCDivisionReadOnlyValue";
+import { uniformTableHeaderCellSx } from "@app/theme/custom_themes/shared/data_table_theme";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+import FieldErrorText from "@/ui/components/validation/FieldErrorText";
+import { fieldError } from "@/data/validation/adapters/qcHardware.validation";
+
+const BRAND = QC_DIVISION_BRAND;
+const TABLE_BORDER = alpha(BRAND.primary, 0.18);
+const HEADER_CELL_BORDER = alpha("#fff", 0.22);
+
+const TH = {
+  ...uniformTableHeaderCellSx(BRAND.primary, BRAND.primaryLight, {
+    headerFontSize: "0.68rem",
+    headerLetterSpacing: "0.06em",
+    headerPaddingY: "10px",
+    headerPaddingX: "12px",
+  }),
+  border: `1px solid ${HEADER_CELL_BORDER}`,
+};
+
+const cellSx = {
+  fontSize: "0.72rem",
+  py: 0.75,
+  px: 0.75,
+  verticalAlign: "middle",
+  border: `1px solid ${TABLE_BORDER}`,
+};
+
+const tableFieldSx = { "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } };
+
+const tableDateFieldSx = {
+  mb: 0,
+  "& .MuiOutlinedInput-root": {
+    fontSize: "0.72rem",
+    minHeight: "32px",
+    height: "32px",
+  },
+  "& .MuiOutlinedInput-input": {
+    py: "4px",
+    fontSize: "0.72rem",
+  },
+};
+
+const tableTimeFieldSx = {
+  mb: 0,
+  "& .MuiOutlinedInput-root": {
+    fontSize: "0.72rem",
+    minHeight: "32px",
+    height: "32px",
+  },
+  "& .MuiOutlinedInput-input": {
+    py: "4px",
+    fontSize: "0.72rem",
+  },
+};
+
+const tableDateTimeFieldSx = {
+  mb: 0,
+  "& .MuiOutlinedInput-root": {
+    fontSize: "0.72rem",
+    minHeight: "32px",
+    height: "32px",
+  },
+  "& .MuiOutlinedInput-input": {
+    py: "4px",
+    fontSize: "0.72rem",
+  },
+};
+
+const DISPATCH_NUMBER_FIELDS = [
+  { key: "HE_PUNCTURES", label: "No of punctures in Loose Flap at HE" },
+  { key: "NE_PUNCTURES", label: "No of punctures in Loose Flap at NE" },
+  { key: "LF_PUNCTURES", label: "No of punctures at LF Extension" },
+] as const;
+
+const normalizeTimeValue = (value: unknown) => {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return trimmed;
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+};
+
+type ColumnDef<T> = {
+  id: keyof T & string;
+  label: string;
+  fieldType?: "text" | "number" | "date" | "time" | "dateTime" | "textarea" | "select";
+  required?: boolean;
+  options?: Array<{ value: string; label: string }>;
+  loadingOptions?: boolean;
+};
+
+type EditableTableProps<T extends Record<string, unknown>> = {
+  title: string;
+  columns: ColumnDef<T>[];
+  rows: T[];
+  onChange: (rows: T[]) => void;
+  createEmptyRow: (srNo: number) => T;
+  readOnly?: boolean;
+  /** Paths: {errorPrefix}.{rowIndex}.{FIELD_ID} */
+  validationErrors?: Record<string, string> | null;
+  errorPrefix?: string;
+};
+
+const HardwareEditableTable = <T extends Record<string, unknown>>({
+  title,
+  columns,
+  rows,
+  onChange,
+  createEmptyRow,
+  readOnly = false,
+  validationErrors = null,
+  errorPrefix = "",
+}: EditableTableProps<T>) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+
+  const updateRow = (index: number, field: keyof T & string, value: string) => {
+    updateRowFields(index, { [field]: value } as Partial<T>);
+  };
+
+  const updateRowFields = (index: number, patch: Partial<T>) => {
+    onChange(
+      rows.map((row, rowIndex) =>
+        rowIndex === index
+          ? ({ ...row, ...patch, SR_NO: rowIndex + 1 } as T)
+          : ({ ...row, SR_NO: rowIndex + 1 } as T),
+      ),
+    );
+  };
+
+  const dateTimeParts = (row: T, column: ColumnDef<T>) => {
+    const dateField = column.id;
+    const timeField = dateField === "START_DATE" ? "START_TIME" : "END_TIME";
+    const rowValues = row as Record<string, unknown>;
+    const date = String(rowValues[dateField] ?? rowValues.DATE ?? "").trim();
+    const time = normalizeTimeValue(rowValues[timeField]);
+    return { date, time };
+  };
+
+  const dateTimeValue = (row: T, column: ColumnDef<T>) => {
+    const { date, time } = dateTimeParts(row, column);
+    return date ? `${date} ${time || "00:00"}` : "";
+  };
+
+  const addRow = () => {
+    onChange([...rows, createEmptyRow(rows.length + 1)]);
+  };
+
+  const removeRow = (index: number) => {
+    if (rows.length <= 1) return;
+    onChange(
+      rows
+        .filter((_, rowIndex) => rowIndex !== index)
+        .map((row, rowIndex) => ({ ...row, SR_NO: rowIndex + 1 }) as T),
+    );
+  };
+
+  const renderInput = (
+    row: T,
+    index: number,
+    column: ColumnDef<T>,
+    fieldPath: string,
+    hasError: boolean,
+  ): ReactNode => {
+    const value = String(row[column.id] ?? "");
+    if (readOnly) {
+      if (column.fieldType === "dateTime") {
+        return <DateTimeField value={dateTimeValue(row, column)} readOnly />;
+      }
+      if (column.fieldType === "select") {
+        const label =
+          column.options?.find((option) => option.value === value)?.label ?? value;
+        return (
+          <QCDivisionReadOnlyValue value={label} muted={!String(value ?? "").trim()} />
+        );
+      }
+      return (
+        <QCDivisionReadOnlyValue
+          value={column.fieldType === "time" ? normalizeTimeValue(value) : value}
+          muted={!String(value ?? "").trim()}
+        />
+      );
+    }
+
+    if (column.fieldType === "date") {
+      return (
+        <Box data-qc-field={fieldPath}>
+          <DateField
+            compact
+            value={value}
+            onChange={(next) => updateRow(index, column.id, next)}
+            placeholder="DD-MM-YYYY"
+            inputSx={tableDateFieldSx}
+            error={hasError}
+          />
+        </Box>
+      );
+    }
+
+    if (column.fieldType === "dateTime") {
+      const dateField = column.id;
+      const timeField = dateField === "START_DATE" ? "START_TIME" : "END_TIME";
+      return (
+        <Box data-qc-field={fieldPath}>
+          <DateTimeField
+            compact
+            value={dateTimeValue(row, column)}
+            minDate={
+              column.id === "END_DATE"
+                ? dateTimeValue(row, { ...column, id: "START_DATE" })
+                : undefined
+            }
+            onChange={(next) => {
+              const [date = "", time = ""] = next.split(/\s+/, 2);
+              updateRowFields(index, {
+                [dateField]: date,
+                [timeField]: time,
+              } as Partial<T>);
+            }}
+            placeholder="DD-MM-YYYY HH:mm"
+            inputSx={tableDateTimeFieldSx}
+            error={hasError}
+          />
+        </Box>
+      );
+    }
+
+    if (column.fieldType === "time") {
+      return (
+        <Box data-qc-field={fieldPath}>
+          <TimeField
+            compact
+            value={normalizeTimeValue(value)}
+            onChange={(next) => updateRow(index, column.id, next)}
+            placeholder="HH:mm"
+            inputSx={tableTimeFieldSx}
+            error={hasError}
+          />
+        </Box>
+      );
+    }
+
+    if (column.fieldType === "select") {
+      const options = column.options ?? [];
+      return (
+        <Box data-qc-field={fieldPath}>
+          <AppDropdown
+            compact
+            value={value}
+            onChange={(next) => updateRow(index, column.id, next)}
+            options={options}
+            disabled={Boolean(column.loadingOptions)}
+            error={hasError}
+            placeholder={
+              column.loadingOptions
+                ? "Loading..."
+                : options.length
+                  ? "Select"
+                  : "No options"
+            }
+            renderValue={(selected) => {
+              const code = String(selected ?? "").trim();
+              if (!code) return null;
+              return options.find((option) => option.value === code)?.label || code;
+            }}
+            sx={tableFieldSx}
+          />
+        </Box>
+      );
+    }
+
+    return (
+      <TextField
+        size="small"
+        fullWidth
+        multiline={column.fieldType === "textarea"}
+        minRows={column.fieldType === "textarea" ? 1 : undefined}
+        type={column.fieldType === "number" ? "number" : "text"}
+        value={value}
+        onChange={(event) => updateRow(index, column.id, event.target.value)}
+        sx={tableFieldSx}
+        error={hasError}
+        inputProps={{ "data-qc-field": fieldPath }}
+      />
+    );
+  };
+
+  return (
+    <Box>
+      <Typography sx={{ fontSize: "0.78rem", fontWeight: 800, color: BRAND.primary, mb: 0.75 }}>
+        {title}
+      </Typography>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : {
+                overflow: "hidden",
+                overflowX: "auto",
+                border: `1px solid ${TABLE_BORDER}`,
+                borderRadius: 2,
+                background: "#fff",
+              }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 900, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={headerSx}>S. No</TableCell>
+              {columns.map((column) => (
+                <TableCell key={column.id} sx={headerSx}>
+                  {column.required ? (
+                    <FieldLabelWithAsterisk
+                      label={column.label}
+                      required
+                      sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                    />
+                  ) : (
+                    column.label
+                  )}
+                </TableCell>
+              ))}
+              {!readOnly ? <TableCell sx={headerSx} align="center" /> : null}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow
+                key={`${title}-${index}`}
+                sx={{
+                  background: readOnly
+                    ? index % 2 === 1
+                      ? alpha(BRAND.primary, 0.03)
+                      : "#fff"
+                    : index % 2 === 0
+                      ? "#fff"
+                      : alpha(BRAND.surface, 0.55),
+                }}
+              >
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? <QCDivisionReadOnlyValue value={index + 1} /> : index + 1}
+                </TableCell>
+                {columns.map((column) => {
+                  const path = errorPrefix
+                    ? `${errorPrefix}.${index}.${column.id}`
+                    : `${index}.${column.id}`;
+                  const dateTimeErrorPath = errorPrefix
+                    ? `${errorPrefix}.${index}.${column.id === "START_DATE" ? "START_TIME" : "END_TIME"}`
+                    : `${index}.${column.id === "START_DATE" ? "START_TIME" : "END_TIME"}`;
+                  const message =
+                    fieldError(validationErrors ?? undefined, path) ||
+                    (column.fieldType === "dateTime"
+                      ? fieldError(validationErrors ?? undefined, dateTimeErrorPath)
+                      : "");
+                  return (
+                    <TableCell key={column.id} sx={bodyCellSx}>
+                      {renderInput(row, index, column, path, Boolean(message))}
+                      {!readOnly ? <FieldErrorText message={message} /> : null}
+                    </TableCell>
+                  );
+                })}
+                {!readOnly ? (
+                  <TableCell sx={bodyCellSx} align="center">
+                    <IconButton
+                      size="small"
+                      disabled={rows.length <= 1}
+                      onClick={() => removeRow(index)}
+                      sx={{ color: BRAND.danger }}
+                    >
+                      <DeleteOutlineRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </TableCell>
+                ) : null}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {!readOnly ? (
+        <Box sx={{ mt: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddRoundedIcon />}
+            onClick={addRow}
+            sx={{ textTransform: "none" }}
+          >
+            Add Row
+          </Button>
+        </Box>
+      ) : null}
+    </Box>
+  );
+};
+
+type QCHardwareProcessPanelProps = {
+  subType: string;
+  values: SchemaFormValues;
+  onChange: (values: SchemaFormValues | ((prev: SchemaFormValues) => SchemaFormValues)) => void;
+  readOnly?: boolean;
+  headerActions?: ReactNode;
+  validationErrors?: Record<string, string> | null;
+};
+
+const ABRADING_COLUMNS: ColumnDef<QcHardwareCutRow>[] = [
+  { id: "START_DATE", label: "Start Date & Time", fieldType: "dateTime", required: true },
+  { id: "END_DATE", label: "End Date & Time", fieldType: "dateTime", required: true },
+  { id: "DUST_QTY", label: "Qty of Dust (gms)", fieldType: "number", required: true },
+  { id: "OBSERVATIONS", label: "Observations", fieldType: "textarea" },
+];
+
+const PREHEATING_COLUMNS_BASE: ColumnDef<QcHardwarePreheatingRow>[] = [
+  { id: "START_DATE", label: "Start Date & Time", fieldType: "dateTime", required: true },
+  { id: "END_DATE", label: "End Date & Time", fieldType: "dateTime", required: true },
+  { id: "OVEN_NUMBER", label: "Oven Number", fieldType: "text", required: true },
+  { id: "BUILDING_NO", label: "Building No", fieldType: "select", required: true },
+  { id: "TEMPERATURE", label: "Temperature (°C)", fieldType: "number", required: true },
+  { id: "VACUUM_LEVEL", label: "Vacuum Level (Torr)", fieldType: "number", required: true },
+  { id: "OBSERVATIONS", label: "Observations", fieldType: "textarea" },
+];
+
+const LINEAR_COATING_COLUMNS: ColumnDef<QcHardwareLinearCoatingRow>[] = [
+  { id: "START_DATE", label: "Start Date & Time", fieldType: "dateTime", required: true },
+  { id: "END_DATE", label: "End Date & Time", fieldType: "dateTime", required: true },
+  { id: "LINER_QTY", label: "Quantity of liner used (g)", fieldType: "number", required: true },
+  { id: "INSULATION_TEMP", label: "Insulation Temp", fieldType: "number", required: true },
+  { id: "RH", label: "RH", fieldType: "number", required: true },
+  { id: "OBSERVATIONS", label: "Observations", fieldType: "textarea" },
+];
+
+const QCHardwareProcessPanel = ({
+  subType,
+  values,
+  onChange,
+  readOnly = false,
+  headerActions,
+  validationErrors = null,
+}: QCHardwareProcessPanelProps) => {
+  const mode = useThemeStore((state) => state.mode);
+  const manufacturingTheme = useMemo(() => getManufacturingTheme(mode), [mode]);
+  const processLabel = getQcHardwareProcessLabel(subType);
+  const { dropdownOptions: buildingOptions, loadingBuildings } = useBuildingOptions(true);
+  const preheatingColumns = useMemo(
+    () =>
+      PREHEATING_COLUMNS_BASE.map((column) =>
+        column.id === "BUILDING_NO"
+          ? {
+              ...column,
+              options: buildingOptions,
+              loadingOptions: loadingBuildings,
+            }
+          : column,
+      ),
+    [buildingOptions, loadingBuildings],
+  );
+  const firstCutRows = useMemo(
+    () => getHardwareAbradingRows(values, QC_HARDWARE_ABRADING_FIRST_CUT_TABLE_ID),
+    [values],
+  );
+  const secondCutRows = useMemo(
+    () => getHardwareAbradingRows(values, QC_HARDWARE_ABRADING_SECOND_CUT_TABLE_ID),
+    [values],
+  );
+  const preheatingRows = useMemo(() => getHardwarePreheatingRows(values), [values]);
+  const linearCoatingRows = useMemo(() => getHardwareLinearCoatingRows(values), [values]);
+  const dispatchValues = useMemo(() => getHardwareDispatchValues(values), [values]);
+  const visualObservationRows = useMemo(
+    () => getHardwareDispatchVisualObservationRows(values),
+    [values],
+  );
+  const processSubType = isQcHardwareProcessSubType(subType) ? subType : null;
+  const qaRemarks = useMemo(
+    () => (processSubType ? getHardwareQaRemarks(values, processSubType) : ""),
+    [processSubType, values],
+  );
+
+  const setFirstCut = useCallback(
+    (rows: QcHardwareCutRow[]) => {
+      onChange((prev) =>
+        setHardwareAbradingRows(prev, QC_HARDWARE_ABRADING_FIRST_CUT_TABLE_ID, rows),
+      );
+    },
+    [onChange],
+  );
+  const setSecondCut = useCallback(
+    (rows: QcHardwareCutRow[]) => {
+      onChange((prev) =>
+        setHardwareAbradingRows(prev, QC_HARDWARE_ABRADING_SECOND_CUT_TABLE_ID, rows),
+      );
+    },
+    [onChange],
+  );
+  const setPreheating = useCallback(
+    (rows: QcHardwarePreheatingRow[]) => {
+      onChange((prev) => setHardwarePreheatingRows(prev, rows));
+    },
+    [onChange],
+  );
+  const setLinearCoating = useCallback(
+    (rows: QcHardwareLinearCoatingRow[]) => {
+      onChange((prev) => setHardwareLinearCoatingRows(prev, rows));
+    },
+    [onChange],
+  );
+  const patchVisualObservationRow = useCallback(
+    (index: number, patch: Partial<QcHardwareVisualObservationRow>) => {
+      onChange((prev) => {
+        const rows = getHardwareDispatchVisualObservationRows(prev).map((row, rowIndex) =>
+          rowIndex === index ? { ...row, ...patch } : row,
+        );
+        return setHardwareDispatchVisualObservationRows(prev, rows);
+      });
+    },
+    [onChange],
+  );
+
+  if (!isQcHardwareProcessSubType(subType)) return null;
+
+  return (
+    <Box
+      sx={{
+        borderRadius: 2.5,
+        border: `1px solid ${BRAND.border}`,
+        background: BRAND.surface,
+        px: 1.5,
+        py: 1.25,
+        mb: 1.75,
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.25} gap={1}>
+        <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+          {processLabel}
+        </Typography>
+        {headerActions}
+      </Stack>
+
+      {subType === "ABRADING" ? (
+        <Stack spacing={2.5}>
+          <HardwareEditableTable
+            title="First Cut"
+            columns={ABRADING_COLUMNS}
+            rows={firstCutRows}
+            onChange={setFirstCut}
+            createEmptyRow={(srNo) => ({
+              SR_NO: srNo,
+              START_DATE: "",
+              START_TIME: "",
+              END_DATE: "",
+              END_TIME: "",
+              DUST_QTY: "",
+              OBSERVATIONS: "",
+            })}
+            readOnly={readOnly}
+            validationErrors={validationErrors}
+            errorPrefix={QC_HARDWARE_ABRADING_FIRST_CUT_TABLE_ID}
+          />
+          <HardwareEditableTable
+            title="Second Cut"
+            columns={ABRADING_COLUMNS}
+            rows={secondCutRows}
+            onChange={setSecondCut}
+            createEmptyRow={(srNo) => ({
+              SR_NO: srNo,
+              START_DATE: "",
+              START_TIME: "",
+              END_DATE: "",
+              END_TIME: "",
+              DUST_QTY: "",
+              OBSERVATIONS: "",
+            })}
+            readOnly={readOnly}
+            validationErrors={validationErrors}
+            errorPrefix={QC_HARDWARE_ABRADING_SECOND_CUT_TABLE_ID}
+          />
+        </Stack>
+      ) : null}
+
+      {subType === "PREHEATING" ? (
+        <HardwareEditableTable
+          title="Preheating Details"
+          columns={preheatingColumns}
+          rows={preheatingRows}
+          onChange={setPreheating}
+          createEmptyRow={(srNo) => ({
+            SR_NO: srNo,
+            START_DATE: "",
+            START_TIME: "",
+            END_DATE: "",
+            END_TIME: "",
+            OVEN_NUMBER: "",
+            BUILDING_NO: "",
+            TEMPERATURE: "",
+            VACUUM_LEVEL: "",
+            OBSERVATIONS: "",
+          })}
+          readOnly={readOnly}
+          validationErrors={validationErrors}
+          errorPrefix={QC_HARDWARE_PREHEATING_TABLE_ID}
+        />
+      ) : null}
+
+      {subType === "LINEAR_COATING" ? (
+        <HardwareEditableTable
+          title="Liner Coating Details"
+          columns={LINEAR_COATING_COLUMNS}
+          rows={linearCoatingRows}
+          onChange={setLinearCoating}
+          createEmptyRow={(srNo) => ({
+            SR_NO: srNo,
+            DATE: "",
+            START_TIME: "",
+            END_TIME: "",
+            LINER_QTY: "",
+            INSULATION_TEMP: "",
+            RH: "",
+            OBSERVATIONS: "",
+          })}
+          readOnly={readOnly}
+          validationErrors={validationErrors}
+          errorPrefix={QC_HARDWARE_LINEAR_COATING_TABLE_ID}
+        />
+      ) : null}
+
+      {subType === "DISPATCH" ? (
+        <Stack spacing={1.5}>
+          <Stack
+            direction={{ xs: "column", md: "row" }}
+            spacing={1.5}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{
+              border: `1px solid ${readOnly ? BRAND.border : TABLE_BORDER}`,
+              borderRadius: readOnly ? 1 : 2,
+              background: "#fff",
+              p: 1.5,
+            }}
+          >
+            {DISPATCH_NUMBER_FIELDS.map((field) => {
+              const message = fieldError(validationErrors ?? undefined, field.key);
+              return (
+                <Box key={field.key} sx={{ flex: "1 1 220px", minWidth: 200 }}>
+                  {readOnly ? (
+                    <Typography
+                      sx={{
+                        fontSize: "0.65rem",
+                        fontWeight: 800,
+                        letterSpacing: "0.02em",
+                        textTransform: "uppercase",
+                        color: BRAND.primary,
+                        mb: 0.5,
+                      }}
+                    >
+                      {field.label}
+                    </Typography>
+                  ) : (
+                    <FieldLabelWithAsterisk
+                      label={field.label}
+                      required
+                      sx={{
+                        fontSize: "0.65rem",
+                        fontWeight: 700,
+                        color: BRAND.textSub,
+                        mb: 0.5,
+                      }}
+                    />
+                  )}
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue
+                      value={dispatchValues[field.key]}
+                      muted={!String(dispatchValues[field.key] ?? "").trim()}
+                    />
+                  ) : (
+                    <TextField
+                      size="small"
+                      fullWidth
+                      type="number"
+                      value={dispatchValues[field.key] ?? ""}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        onChange((prev) =>
+                          setHardwareDispatchValues(prev, {
+                            ...getHardwareDispatchValues(prev),
+                            [field.key]: nextValue,
+                          }),
+                        );
+                      }}
+                      sx={tableFieldSx}
+                      error={Boolean(message)}
+                      inputProps={{ "data-qc-field": field.key }}
+                    />
+                  )}
+                  {!readOnly ? <FieldErrorText message={message} /> : null}
+                </Box>
+              );
+            })}
+            <Box sx={{ flex: "1 1 280px", minWidth: 240 }}>
+              {readOnly ? (
+                <Typography
+                  sx={{
+                    fontSize: "0.65rem",
+                    fontWeight: 800,
+                    letterSpacing: "0.02em",
+                    textTransform: "uppercase",
+                    color: BRAND.primary,
+                    mb: 0.5,
+                  }}
+                >
+                  Date & Time Of Dispatch Of Motor To Casting Division
+                </Typography>
+              ) : (
+                <FieldLabelWithAsterisk
+                  label="Date & Time Of Dispatch Of Motor To Casting Division"
+                  required
+                  sx={{
+                    fontSize: "0.65rem",
+                    fontWeight: 700,
+                    color: BRAND.textSub,
+                    mb: 0.5,
+                  }}
+                />
+              )}
+              {readOnly ? (
+                <QCDivisionReadOnlyValue
+                  value={dispatchValues.DISPATCH_DATE_TIME}
+                  muted={!String(dispatchValues.DISPATCH_DATE_TIME ?? "").trim()}
+                />
+              ) : (
+                <Box data-qc-field="DISPATCH_DATE_TIME">
+                  <DateTimeField
+                    compact
+                    value={dispatchValues.DISPATCH_DATE_TIME ?? ""}
+                    onChange={(next) =>
+                      onChange((prev) =>
+                        setHardwareDispatchValues(prev, {
+                          ...getHardwareDispatchValues(prev),
+                          DISPATCH_DATE_TIME: next,
+                        }),
+                      )
+                    }
+                    placeholder="DD-MM-YYYY HH:mm"
+                    inputSx={tableDateTimeFieldSx}
+                    error={Boolean(
+                      fieldError(validationErrors ?? undefined, "DISPATCH_DATE_TIME"),
+                    )}
+                  />
+                </Box>
+              )}
+              {!readOnly ? (
+                <FieldErrorText
+                  message={fieldError(validationErrors ?? undefined, "DISPATCH_DATE_TIME")}
+                />
+              ) : null}
+            </Box>
+          </Stack>
+          <Box
+            sx={{
+              border: `1px solid ${readOnly ? BRAND.border : TABLE_BORDER}`,
+              borderRadius: readOnly ? 1 : 2,
+              background: "#fff",
+              p: 1.5,
+            }}
+          >
+            <Typography
+              sx={{
+                fontSize: "0.65rem",
+                fontWeight: readOnly ? 800 : 700,
+                letterSpacing: readOnly ? "0.02em" : undefined,
+                textTransform: readOnly ? "uppercase" : undefined,
+                color: readOnly ? BRAND.primary : BRAND.textSub,
+                mb: 0.75,
+              }}
+            >
+              Visual Observations
+            </Typography>
+            <TableContainer
+              sx={{
+                overflow: "hidden",
+                overflowX: "auto",
+                border: `1px solid ${TABLE_BORDER}`,
+                borderRadius: 1.5,
+              }}
+            >
+              <Table size="small" sx={{ minWidth: 560, borderCollapse: "collapse" }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ ...TH, width: 56 }}>Sr No</TableCell>
+                    <TableCell sx={TH}>Parameter</TableCell>
+                    <TableCell sx={TH}>
+                      {readOnly ? (
+                        "Observations"
+                      ) : (
+                        <FieldLabelWithAsterisk
+                          label="Observations"
+                          required
+                          sx={{
+                            display: "inline",
+                            fontSize: "inherit",
+                            fontWeight: "inherit",
+                            color: "inherit",
+                            mb: 0,
+                          }}
+                        />
+                      )}
+                    </TableCell>
+                    <TableCell sx={TH}>Remarks</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {visualObservationRows.map((row, index) => {
+                    const obsPath = `${QC_HARDWARE_DISPATCH_VISUAL_OBSERVATIONS_TABLE_ID}.${index}.OBSERVATIONS`;
+                    const obsMessage = fieldError(validationErrors ?? undefined, obsPath);
+                    return (
+                      <TableRow key={`${row.PARAMETER ?? "row"}-${index}`}>
+                        <TableCell sx={cellSx}>{index + 1}</TableCell>
+                        <TableCell sx={cellSx}>
+                          {readOnly ? (
+                            <QCDivisionReadOnlyValue value={row.PARAMETER} />
+                          ) : (
+                            <Typography
+                              sx={{ fontSize: "0.72rem", fontWeight: 600, color: BRAND.text }}
+                            >
+                              {row.PARAMETER}
+                            </Typography>
+                          )}
+                        </TableCell>
+                        <TableCell sx={cellSx}>
+                          {readOnly ? (
+                            <QCDivisionReadOnlyValue
+                              value={row.OBSERVATIONS}
+                              muted={!String(row.OBSERVATIONS ?? "").trim()}
+                            />
+                          ) : (
+                            <>
+                              <TextField
+                                size="small"
+                                fullWidth
+                                multiline
+                                minRows={1}
+                                value={row.OBSERVATIONS ?? ""}
+                                onChange={(event) =>
+                                  patchVisualObservationRow(index, {
+                                    OBSERVATIONS: event.target.value,
+                                  })
+                                }
+                                sx={tableFieldSx}
+                                error={Boolean(obsMessage)}
+                                inputProps={{ "data-qc-field": obsPath }}
+                              />
+                              <FieldErrorText message={obsMessage} />
+                            </>
+                          )}
+                        </TableCell>
+                        <TableCell sx={cellSx}>
+                          {readOnly ? (
+                            <QCDivisionReadOnlyValue
+                              value={row.REMARKS}
+                              muted={!String(row.REMARKS ?? "").trim()}
+                            />
+                          ) : (
+                            <TextField
+                              size="small"
+                              fullWidth
+                              multiline
+                              minRows={1}
+                              value={row.REMARKS ?? ""}
+                              onChange={(event) =>
+                                patchVisualObservationRow(index, {
+                                  REMARKS: event.target.value,
+                                })
+                              }
+                              sx={tableFieldSx}
+                            />
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Box>
+        </Stack>
+      ) : null}
+
+      {processSubType ? (
+        <Box sx={{ mt: 2 }} data-qc-field={`${processSubType}.qaRemarks`}>
+          <CasePrepTextField
+            label="QA Remarks"
+            value={qaRemarks}
+            readOnly={readOnly}
+            width="100%"
+            theme={manufacturingTheme}
+            onChange={(next) => onChange(setHardwareQaRemarks(values, processSubType, next))}
+          />
+        </Box>
+      ) : null}
+    </Box>
+  );
+};
+
+export default QCHardwareProcessPanel;

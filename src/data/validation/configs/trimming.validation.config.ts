@@ -1,0 +1,144 @@
+import type { TrimmingMotorSession } from "@/data/models/user/TrimmingFormModel";
+import type { FieldRuleConfig, SubDeptValidationConfig } from "../runValidation";
+import type { ValidationTier } from "../submissionIntent";
+import { str } from "../fieldValidators";
+import { VALIDATIONSTRING } from "./validationString";
+
+const S = VALIDATIONSTRING;
+
+const text = (requiredIn: ValidationTier[], pattern?: RegExp): FieldRuleConfig => ({
+  valueType: "text",
+  requiredIn,
+  pattern,
+  messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+});
+
+const number = (requiredIn: ValidationTier[]): FieldRuleConfig => ({
+  valueType: "number",
+  requiredIn,
+  pattern: S.PATTERNS.FLOAT,
+  messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+});
+
+const dateTime = (requiredIn: ValidationTier[]): FieldRuleConfig => ({
+  valueType: "datetime",
+  requiredIn,
+  messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+});
+
+const datetime = (requiredIn: ValidationTier[]): FieldRuleConfig => ({
+  valueType: "datetime",
+  requiredIn,
+  messages: { required: S.FIELD_REQUIRED, invalid: S.INVALID },
+});
+export type TrimmingValidationTarget = TrimmingMotorSession;
+
+const DEFAULT_READING_KEYS = ["R2T", "R2B", "R1R", "R1L"] as const;
+
+export const trimmingValidationFields: Record<string, FieldRuleConfig> = {
+  motorReceivedAt: dateTime(["UNIT", "SUBMIT"]),
+  // Equipment names from /system/equipment-list (e.g. "4 MeV LINAC", "2/6 MeV LINAC").
+  machineDetails: text(["SUBMIT"], S.PATTERNS.ALPHABET_WITH_SPECIAL),
+  startDate: dateTime(["SUBMIT"]),
+  completionDate: dateTime(["SUBMIT"]),
+  arborSize: number(["FORMAT", "SUBMIT"]),
+  cutterSize: number(["FORMAT", "SUBMIT"]),
+  ingestSize: number(["FORMAT", "SUBMIT"]),
+  motorTruing: number(["FORMAT", "SUBMIT"]),
+  arborTuring: number(["FORMAT", "SUBMIT"]),
+  reading: number(["FORMAT", "SUBMIT"]),
+  remarks: text([], S.PATTERNS.ALPHABET_WITH_SPECIAL),
+};
+
+const resolveReadingKeys = (motor: TrimmingMotorSession): string[] => {
+  const keys = new Set<string>(DEFAULT_READING_KEYS);
+  const locs = (motor as { commonFormatLocations?: string[] }).commonFormatLocations;
+  if (Array.isArray(locs)) locs.forEach((k) => keys.add(String(k)));
+  (motor.commonFormatParameters ?? []).forEach((param) => {
+    param.stages?.forEach((stage) => {
+      Object.keys(stage.readings ?? {}).forEach((k) => keys.add(k));
+    });
+  });
+  return [...keys];
+};
+
+export const trimmingValidationConfig: SubDeptValidationConfig<TrimmingValidationTarget> = {
+  id: "trimming",
+  fields: trimmingValidationFields,
+  resolveFieldPaths: (motor) => {
+    const fields: Array<{ path: string; value: unknown; ruleKey: string }> = [
+      { path: "motorReceivedAt", value: motor.motorReceivedAt, ruleKey: "motorReceivedAt" },
+    ];
+
+    (motor.trimmingDetails ?? []).forEach((row, index) => {
+      fields.push(
+        {
+          path: `trimmingDetails.${index}.machineDetails`,
+          value: row.machineDetails,
+          ruleKey: "machineDetails",
+        },
+        {
+          path: `trimmingDetails.${index}.startDate`,
+          value: row.startDate,
+          ruleKey: "startDate",
+        },
+        {
+          path: `trimmingDetails.${index}.completionDate`,
+          value: row.completionDate,
+          ruleKey: "completionDate",
+        },
+        {
+          path: `trimmingDetails.${index}.arborSize`,
+          value: row.arborSize,
+          ruleKey: "arborSize",
+        },
+        {
+          path: `trimmingDetails.${index}.cutterSize`,
+          value: row.cutterSize,
+          ruleKey: "cutterSize",
+        },
+        {
+          path: `trimmingDetails.${index}.ingestSize`,
+          value: row.ingestSize,
+          ruleKey: "ingestSize",
+        },
+        {
+          path: `trimmingDetails.${index}.motorTruing`,
+          value: row.motorTruing,
+          ruleKey: "motorTruing",
+        },
+        {
+          path: `trimmingDetails.${index}.arborTuring`,
+          value: row.arborTuring,
+          ruleKey: "arborTuring",
+        },
+        {
+          path: `trimmingDetails.${index}.remarks`,
+          value: row.remarks,
+          ruleKey: "remarks",
+        },
+      );
+    });
+
+    const readingKeys = resolveReadingKeys(motor);
+    (motor.commonFormatParameters ?? []).forEach((param, pIndex) => {
+      (param.stages ?? []).forEach((stage, sIndex) => {
+        readingKeys.forEach((key) => {
+          fields.push({
+            path: `commonFormatParameters.${pIndex}.stages.${sIndex}.readings.${key}`,
+            value: stage.readings?.[key],
+            ruleKey: "reading",
+          });
+        });
+      });
+    });
+
+    return fields;
+  },
+  customRules: [],
+  isUnitComplete: (motor) => Boolean(str(motor.motorReceivedAt)),
+};
+
+export function toTrimmingValidationTarget(motor: TrimmingMotorSession): TrimmingValidationTarget {
+  return motor;
+}

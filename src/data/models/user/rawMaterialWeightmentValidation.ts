@@ -1,0 +1,352 @@
+import type { MaterialItem } from "../admin/BatchManagement/BatchManagementModel";
+import type { RawMaterialPrepWeightmentDetail } from "./RawMaterialPreparationModel";
+
+export type WeightmentRowFieldErrors = {
+  materialCode?: string;
+  materialName?: string;
+  percentage?: string;
+  weightTransferred?: string;
+};
+
+const PERCENTAGE_TOLERANCE = 0.01;
+const WEIGHT_TOLERANCE_KG = 0.001;
+
+const str = (value: unknown) => (value == null ? "" : String(value)).trim();
+
+const isFiniteNumber = (value: unknown): boolean => {
+  const text = str(value).replace(/,/g, "");
+  return Boolean(text) && Number.isFinite(Number(text));
+};
+
+const WEIGHTMENT_ROW_REQUIRED_FIELDS: Array<keyof RawMaterialPrepWeightmentDetail> = [
+  "materialCode",
+  "percentage",
+  "weightTransferred",
+  "containerType",
+  "containerNumber",
+  "weighScaleNumber",
+  "weighingDateTime",
+];
+
+/** True when a weightment row has every required field filled with valid values. */
+export const weightmentRowHasCompleteData = (row: RawMaterialPrepWeightmentDetail): boolean => {
+  const hasAny =
+    WEIGHTMENT_ROW_REQUIRED_FIELDS.some((key) => str(row[key])) || str(row.materialName);
+  if (!hasAny) return false;
+
+  return WEIGHTMENT_ROW_REQUIRED_FIELDS.every((key) => {
+    const text = str(row[key]);
+    if (!text) return false;
+    if (key === "percentage" || key === "weightTransferred") {
+      return isFiniteNumber(text);
+    }
+    return true;
+  });
+};
+
+/** True when the weightment sheet has a complete row for the material code (optionally scoped to a premix). */
+export const weightmentHasMaterialData = (
+  sheet: RawMaterialPrepWeightmentDetail[] | { weightmentDetails?: RawMaterialPrepWeightmentDetail[] },
+  materialCode: string,
+  premixNo?: number | null,
+): boolean => {
+  const code = str(materialCode).toUpperCase();
+  if (!code) return false;
+  const rows = Array.isArray(sheet)
+    ? sheet
+    : Array.isArray(sheet.weightmentDetails)
+      ? sheet.weightmentDetails
+      : [];
+  const premix =
+    premixNo == null || !Number.isFinite(Number(premixNo)) ? null : Number(premixNo);
+  return rows.some((row) => {
+    if (str(row.materialCode).toUpperCase() !== code) return false;
+    if (premix != null) {
+      const rowPremix =
+        row.premixNo == null || !Number.isFinite(Number(row.premixNo))
+          ? null
+          : Number(row.premixNo);
+      if (rowPremix != null && rowPremix !== premix) return false;
+    }
+    return weightmentRowHasCompleteData(row);
+  });
+};
+
+export const numbersApproximatelyEqual = (
+  a: number,
+  b: number,
+  epsilon = WEIGHT_TOLERANCE_KG,
+): boolean => Math.abs(a - b) <= epsilon;
+
+export const formatSheetMaterialLabel = (material: MaterialItem): string => {
+  const code = String(material.materialCode ?? "").trim();
+  const name = String(material.materialName ?? code).trim();
+  const gradeCode = String(material.gradeCode ?? "").trim();
+  const gradeName = String(material.gradeName ?? "").trim();
+  const grade = [gradeCode, gradeName].filter(Boolean).join(" — ");
+  return grade ? `${grade} (${code} — ${name})` : `${code} — ${name}`;
+};
+
+export const resolveWeightmentRowDisplay = (
+  row: RawMaterialPrepWeightmentDetail,
+  sheetMaterials: MaterialItem[] = [],
+) => {
+  const sheet = findSheetMaterialForWeightmentRow(row, sheetMaterials);
+  const materialCode = String(row.materialCode ?? "").trim();
+  const materialName = String(row.materialName ?? "").trim() || materialCode;
+  const gradeCode = String(row.gradeCode ?? sheet?.gradeCode ?? "").trim();
+  const gradeName = String(row.gradeName ?? sheet?.gradeName ?? "").trim();
+  const hasGrade = Boolean(gradeCode || gradeName);
+  return {
+    hasGrade,
+    primaryCode: hasGrade ? gradeCode || gradeName : materialCode,
+    primaryName: hasGrade ? gradeName || gradeCode : materialName,
+    secondaryCode: hasGrade ? materialCode : "",
+    secondaryName: hasGrade ? materialName : "",
+  };
+};
+
+/** API may send plain numbers or `{ source, parsedValue }` wrappers. */
+export const unwrapSheetNumber = (value: unknown): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const rec = value as Record<string, unknown>;
+    if (rec.parsedValue != null && rec.parsedValue !== "") {
+      const parsed = Number(rec.parsedValue);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    if (rec.source != null && rec.source !== "") {
+      const fromSource = Number(String(rec.source).replace(/,/g, "").trim());
+      if (Number.isFinite(fromSource)) return fromSource;
+    }
+  }
+  const text = String(value ?? "")
+    .replace(/,/g, "")
+    .trim();
+  if (!text) return 0;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : 0;
+};
+
+export const normalizeSheetMaterialsForWeightmentCompare = (
+  materials: unknown,
+): MaterialItem[] => {
+  if (!Array.isArray(materials)) return [];
+  return materials
+    .map((raw, index) => {
+      if (!raw || typeof raw !== "object") return null;
+      const m = raw as Record<string, unknown>;
+      const materialCode = String(m.materialCode ?? m.material_code ?? "").trim();
+      if (!materialCode) return null;
+      return {
+        srNo: Number(m.srNo ?? m.sr_no ?? index + 1) || index + 1,
+        materialId:
+          m.materialId != null && Number.isFinite(Number(m.materialId))
+            ? Number(m.materialId)
+            : m.material_id != null && Number.isFinite(Number(m.material_id))
+              ? Number(m.material_id)
+              : undefined,
+        materialCode,
+        materialName: String(m.materialName ?? m.material_name ?? materialCode).trim(),
+        gradeCode: String(m.gradeCode ?? m.grade_code ?? "").trim() || undefined,
+        gradeName: String(m.gradeName ?? m.grade_name ?? "").trim() || undefined,
+        // API stores lotIds[]; singular lotId is often empty — keep both for dropdown + compare table.
+        ...(() => {
+          const fromArray = Array.isArray(m.lotIds)
+            ? m.lotIds.map((id) => String(id ?? "").trim()).filter(Boolean)
+            : Array.isArray(m.lot_ids)
+              ? m.lot_ids.map((id) => String(id ?? "").trim()).filter(Boolean)
+              : [];
+          const singular = String(m.lotId ?? m.lot_id ?? "").trim();
+          const lotIds =
+            fromArray.length > 0 ? fromArray : singular ? [singular] : [];
+          return {
+            lotIds,
+            lotId: singular || lotIds.join(", "),
+          };
+        })(),
+        make: String(m.make ?? m.manufacturerName ?? "").trim(),
+        manufacturerName: String(m.manufacturerName ?? m.make ?? "").trim(),
+        requiredComposition: unwrapSheetNumber(m.requiredComposition ?? m.required_composition),
+        quantityPerPremix: unwrapSheetNumber(m.quantityPerPremix ?? m.quantity_per_premix),
+        revalidationFromDate: String(m.revalidationFromDate ?? "").trim(),
+        revalidationToDate: String(m.revalidationToDate ?? "").trim(),
+        revalidationDate: String(m.revalidationDate ?? m.revalidationFromDate ?? "").trim(),
+      } as MaterialItem;
+    })
+    .filter(Boolean) as MaterialItem[];
+};
+
+export const getExpectedWeightmentForSheetMaterial = (material: MaterialItem) => {
+  const percentage = unwrapSheetNumber(material.requiredComposition);
+  const expectedWeightKg = Number(unwrapSheetNumber(material.quantityPerPremix).toFixed(3));
+
+  return { percentage, expectedWeightKg };
+};
+
+/** Stable unique key for ID-sheet materials — srNo alone can duplicate across rows. */
+export const getSheetMaterialSelectKey = (material: MaterialItem): string => {
+  const code = String(material.materialCode ?? "").trim().toUpperCase();
+  if (material.materialId != null && Number.isFinite(Number(material.materialId))) {
+    return `${Number(material.materialId)}:${code}`;
+  }
+  const sr = Number(material.srNo);
+  return Number.isFinite(sr) && sr > 0 ? `${sr}:${code}` : code;
+};
+
+export const findSheetMaterialForWeightmentRow = (
+  row: RawMaterialPrepWeightmentDetail,
+  sheetMaterials: MaterialItem[],
+): MaterialItem | undefined => {
+  const code = String(row.materialCode ?? "").trim().toUpperCase();
+  if (!code) return undefined;
+
+  const matches = sheetMaterials.filter(
+    (material) => String(material.materialCode ?? "").trim().toUpperCase() === code,
+  );
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0];
+
+  const rowGrade = String(row.gradeCode ?? row.gradeName ?? "").trim().toUpperCase();
+  if (rowGrade) {
+    const byGrade = matches.filter((material) => {
+      const gradeCode = String(material.gradeCode ?? "").trim().toUpperCase();
+      const gradeName = String(material.gradeName ?? "").trim().toUpperCase();
+      return gradeCode === rowGrade || gradeName === rowGrade;
+    });
+    if (byGrade.length === 1) return byGrade[0];
+    if (byGrade.length > 1) return byGrade[0];
+  }
+
+  const name = String(row.materialName ?? "").trim().toUpperCase();
+  if (name) {
+    const byName = matches.filter(
+      (material) => String(material.materialName ?? "").trim().toUpperCase() === name,
+    );
+    if (byName.length === 1) return byName[0];
+  }
+
+  const gradeHint = name.match(/\(([^)]+)\)$/)?.[1]?.trim().toUpperCase();
+  if (gradeHint) {
+    const byGrade = matches.filter((material) => {
+      const grade = String(material.gradeCode ?? material.gradeName ?? "")
+        .trim()
+        .toUpperCase();
+      return grade === gradeHint;
+    });
+    if (byGrade.length === 1) return byGrade[0];
+  }
+
+  return matches[0];
+};
+
+export const getWeightmentRowSheetKey = (
+  row: RawMaterialPrepWeightmentDetail,
+  sheetMaterials: MaterialItem[],
+): string => {
+  const material = findSheetMaterialForWeightmentRow(row, sheetMaterials);
+  return material ? getSheetMaterialSelectKey(material) : "";
+};
+
+export const validateWeightmentRowAgainstSheet = (
+  row: RawMaterialPrepWeightmentDetail,
+  sheetMaterials: MaterialItem[],
+  messages: {
+    materialNotInSheet: string;
+    nameMismatch?: (expected: string) => string;
+    percentageMismatch: (expected: number) => string;
+    weightMismatch: (expected: number) => string;
+  },
+): WeightmentRowFieldErrors => {
+  const errors: WeightmentRowFieldErrors = {};
+  const materialCode = String(row.materialCode ?? "").trim();
+
+  if (!materialCode) {
+    return errors;
+  }
+
+  // Avoid false "not listed" errors while identification materials are still loading.
+  if (!sheetMaterials.length) {
+    return errors;
+  }
+
+  const sheetMaterial = findSheetMaterialForWeightmentRow(row, sheetMaterials);
+  if (!sheetMaterial) {
+    errors.materialCode = messages.materialNotInSheet;
+    return errors;
+  }
+
+  const sheetName = String(sheetMaterial.materialName ?? sheetMaterial.materialCode ?? "").trim();
+  const enteredName = String(row.materialName ?? "").trim();
+  if (
+    messages.nameMismatch &&
+    enteredName &&
+    sheetName &&
+    enteredName.toUpperCase() !== sheetName.toUpperCase()
+  ) {
+    errors.materialName = messages.nameMismatch(sheetName);
+  }
+
+  // Percentage column removed; multi-bin rows may each be less than sheet quantityPerPremix,
+  // so do not flag per-row percentage/weight against the full sheet expected values.
+
+  return errors;
+};
+
+export const weightmentRowsHaveSheetDeviations = (
+  rows: RawMaterialPrepWeightmentDetail[],
+  sheetMaterials: MaterialItem[],
+  messages: {
+    materialNotInSheet: string;
+    percentageMismatch: (expected: number) => string;
+    weightMismatch: (expected: number) => string;
+  },
+): boolean =>
+  rows.some((row) => {
+    const errors = validateWeightmentRowAgainstSheet(row, sheetMaterials, messages);
+    return Object.keys(errors).length > 0;
+  });
+
+export const validateWeightmentSheetAgainstIdentification = (
+  rows: RawMaterialPrepWeightmentDetail[],
+  sheetMaterials: MaterialItem[],
+  compareEnabled: boolean,
+  messages: {
+    materialNotInSheet: string;
+    percentageMismatch: (expected: number) => string;
+    weightMismatch: (expected: number) => string;
+    deviationMessageRequired: string;
+    incompleteRow: string;
+  },
+  validation: { deviationFound: boolean; deviationMessage: string },
+): string | null => {
+  if (!compareEnabled) return null;
+
+  const filledRows = rows.filter(
+    (row) =>
+      String(row.materialCode ?? "").trim() ||
+      String(row.percentage ?? "").trim() ||
+      String(row.weightTransferred ?? "").trim(),
+  );
+
+  let hasAnyDeviation = false;
+
+  for (const row of filledRows) {
+    if (!String(row.materialCode ?? "").trim()) {
+      return messages.incompleteRow;
+    }
+
+    const errors = validateWeightmentRowAgainstSheet(row, sheetMaterials, messages);
+    if (Object.keys(errors).length > 0) {
+      hasAnyDeviation = true;
+    }
+  }
+
+  if (!hasAnyDeviation) return null;
+
+  if (!validation.deviationFound || !String(validation.deviationMessage ?? "").trim()) {
+    return messages.deviationMessageRequired;
+  }
+
+  return null;
+};

@@ -1,0 +1,296 @@
+import { useCallback, useMemo } from "react";
+import {
+  Box,
+  Button,
+  IconButton,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+  alpha,
+} from "@mui/material";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import { STRINGS } from "../../../../../app/config/strings";
+import { QC_DIVISION_BRAND } from "../../../../../app/theme/custom_themes/user/qualityControl/tokens";
+import type { SchemaFormValues } from "@/data/models/shared/sectionFormTypes";
+import {
+  getViscosityQaRemarks,
+  getViscosityRows,
+  setViscosityQaRemarks,
+  setViscosityRows,
+  type QcMixingViscosityRow,
+} from "../../../../../hooks/user/qualityControl/qcMixingTables";
+import {
+  QCDivisionReadOnlyValue,
+  qcReadOnlyBodyCellSx,
+  qcReadOnlyTableContainerSx,
+  qcReadOnlyTableHeaderCellSx,
+} from "./components/QCDivisionReadOnlyValue";
+import { uniformTableHeaderCellSx } from "@app/theme/custom_themes/shared/data_table_theme";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+import FieldErrorText from "@/ui/components/validation/FieldErrorText";
+import { fieldError } from "@/data/validation/adapters/qcMixing.validation";
+
+const BRAND = QC_DIVISION_BRAND;
+
+const TABLE_BORDER = alpha(BRAND.primary, 0.18);
+const HEADER_CELL_BORDER = alpha("#fff", 0.22);
+
+const TH = {
+  ...uniformTableHeaderCellSx(BRAND.primary, BRAND.primaryLight, {
+    headerFontSize: "0.62rem",
+    headerLetterSpacing: "0.04em",
+    headerPaddingY: "5px",
+    headerPaddingX: "8px",
+  }),
+  border: `1px solid ${HEADER_CELL_BORDER}`,
+  lineHeight: 1.2,
+};
+
+const cellSx = {
+  fontSize: "0.72rem",
+  py: 0.75,
+  px: 0.75,
+  verticalAlign: "middle",
+  border: `1px solid ${TABLE_BORDER}`,
+};
+
+type QCMixingViscosityTableProps = {
+  values: SchemaFormValues;
+  onChange: (values: SchemaFormValues) => void;
+  readOnly?: boolean;
+  validationErrors?: Record<string, string> | null;
+};
+
+const QCMixingViscosityTable = ({
+  values,
+  onChange,
+  readOnly = false,
+  validationErrors = null,
+}: QCMixingViscosityTableProps) => {
+  const rows = useMemo(() => getViscosityRows(values), [values]);
+  const qaRemarks = useMemo(() => getViscosityQaRemarks(values), [values]);
+  const err = useCallback(
+    (path: string) => fieldError(validationErrors ?? undefined, path),
+    [validationErrors],
+  );
+  const baseCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+
+  const updateRows = useCallback(
+    (nextRows: QcMixingViscosityRow[]) => {
+      onChange(setViscosityRows(values, nextRows));
+    },
+    [onChange, values],
+  );
+
+  const updateRow = useCallback(
+    (index: number, field: keyof QcMixingViscosityRow, value: string) => {
+      updateRows(
+        rows.map((row, rowIndex) =>
+          rowIndex === index ? { ...row, [field]: value, SR_NO: rowIndex + 1 } : row,
+        ),
+      );
+    },
+    [rows, updateRows],
+  );
+
+  const addRow = useCallback(() => {
+    updateRows([...rows, { SR_NO: rows.length + 1, TIME: "", VISCOSITY_VALUE: "" }]);
+  }, [rows, updateRows]);
+
+  const removeRow = useCallback(
+    (index: number) => {
+      if (rows.length <= 1) return;
+      updateRows(
+        rows
+          .filter((_, rowIndex) => rowIndex !== index)
+          .map((row, rowIndex) => ({ ...row, SR_NO: rowIndex + 1 })),
+      );
+    },
+    [rows, updateRows],
+  );
+
+  const headerColumns: Array<{ label: string; required?: boolean }> = [
+    { label: "S. No" },
+    { label: "Time (min)", required: true },
+    { label: "Viscosity Value (P @ 40°C)", required: true },
+  ];
+
+  return (
+    <Box>
+      {!readOnly ? (
+        <>
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 0.5 }}>
+            Viscosity Build-up (P @ 40°C)
+          </Typography>
+          <Typography sx={{ fontSize: "0.72rem", color: BRAND.textSub, mb: 1 }}>
+            {STRINGS.QUALITY_CONTROL.QC_DIVISION.MIXING_FINAL_MIX_VISCOSITY_ENTRY_HINT}
+          </Typography>
+        </>
+      ) : (
+        <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 1 }}>
+          Viscosity Build-up (P @ 40°C)
+        </Typography>
+      )}
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : {
+                overflow: "hidden",
+                overflowX: "auto",
+                border: `1px solid ${TABLE_BORDER}`,
+                borderRadius: 2,
+                background: "#fff",
+              }
+        }
+      >
+        <Table
+          size="small"
+          stickyHeader={!readOnly}
+          sx={{
+            minWidth: 420,
+            borderCollapse: "collapse",
+          }}
+        >
+          <TableHead>
+            <TableRow>
+              {headerColumns.map(({ label, required }) => {
+                const content = required ? (
+                  <FieldLabelWithAsterisk
+                    label={label}
+                    required
+                    sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                  />
+                ) : (
+                  label
+                );
+                return readOnly ? (
+                  <TableCell key={label} sx={qcReadOnlyTableHeaderCellSx}>
+                    {content}
+                  </TableCell>
+                ) : (
+                  <TableCell key={label} sx={TH}>
+                    {content}
+                  </TableCell>
+                );
+              })}
+              {!readOnly ? <TableCell sx={TH} align="center" /> : null}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow
+                key={`viscosity-${index}`}
+                sx={{
+                  background:
+                    readOnly && index % 2 === 1
+                      ? alpha(BRAND.surface, 0.45)
+                      : index % 2 === 0
+                        ? "#fff"
+                        : alpha(BRAND.surface, 0.55),
+                }}
+              >
+                <TableCell sx={baseCellSx}>{index + 1}</TableCell>
+                <TableCell sx={baseCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.TIME} />
+                  ) : (
+                    <Box data-qc-field={`viscosityRows.${index}.TIME`}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        type="number"
+                        value={row.TIME ?? ""}
+                        onChange={(event) => updateRow(index, "TIME", event.target.value)}
+                        sx={{ "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } }}
+                        error={Boolean(err(`viscosityRows.${index}.TIME`))}
+                        inputProps={{ "data-qc-field": `viscosityRows.${index}.TIME` }}
+                      />
+                      <FieldErrorText message={err(`viscosityRows.${index}.TIME`)} />
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell sx={baseCellSx}>
+                  {readOnly ? (
+                    <QCDivisionReadOnlyValue value={row.VISCOSITY_VALUE} />
+                  ) : (
+                    <Box data-qc-field={`viscosityRows.${index}.VISCOSITY_VALUE`}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        type="number"
+                        value={row.VISCOSITY_VALUE ?? ""}
+                        onChange={(event) => updateRow(index, "VISCOSITY_VALUE", event.target.value)}
+                        sx={{ "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } }}
+                        error={Boolean(err(`viscosityRows.${index}.VISCOSITY_VALUE`))}
+                        inputProps={{
+                          "data-qc-field": `viscosityRows.${index}.VISCOSITY_VALUE`,
+                        }}
+                      />
+                      <FieldErrorText message={err(`viscosityRows.${index}.VISCOSITY_VALUE`)} />
+                    </Box>
+                  )}
+                </TableCell>
+                {!readOnly ? (
+                  <TableCell sx={baseCellSx} align="center">
+                    <IconButton
+                      size="small"
+                      disabled={rows.length <= 1}
+                      onClick={() => removeRow(index)}
+                      sx={{ color: BRAND.danger }}
+                    >
+                      <DeleteOutlineRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </TableCell>
+                ) : null}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {!readOnly ? (
+        <Box sx={{ mt: 1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddRoundedIcon />}
+            onClick={addRow}
+            sx={{ textTransform: "none" }}
+          >
+            Add Row
+          </Button>
+        </Box>
+      ) : null}
+      <Box sx={{ mt: 1.5 }} data-qc-field="viscosityQaRemarks">
+        {readOnly ? (
+          <>
+            <Typography sx={{ fontSize: "0.72rem", fontWeight: 700, color: BRAND.textSub, mb: 0.35 }}>
+              QA Remarks
+            </Typography>
+            <QCDivisionReadOnlyValue value={qaRemarks} />
+          </>
+        ) : (
+          <TextField
+            label="QA Remarks"
+            size="small"
+            fullWidth
+            multiline
+            minRows={2}
+            value={qaRemarks}
+            onChange={(event) => onChange(setViscosityQaRemarks(values, event.target.value))}
+            sx={{ "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } }}
+            inputProps={{ "data-qc-field": "viscosityQaRemarks" }}
+          />
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+export default QCMixingViscosityTable;

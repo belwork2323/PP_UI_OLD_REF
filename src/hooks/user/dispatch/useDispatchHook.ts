@@ -1,0 +1,971 @@
+import { useCallback, useMemo, useRef, useState } from "react";
+import { STRINGS } from "../../../app/config/strings";
+import { useAlertStore } from "../../../app/store/alertStore";
+import { useAuthStore } from "../../../app/store/authStore";
+import { useUserBatchRefreshStore } from "../../../app/store/userBatchRefreshStore";
+import { useFileService } from "../../../hooks/useFileService";
+import { discardWorkflowSnapshotForm } from "../../../utils/workflowDiscard";
+import { batchManagementController } from "../../../controllers/admin/BatchManagement/batchManagementController";
+import dispatchController from "../../../controllers/user/dispatch/dispatchController";
+import { DispatchDetailsModel } from "../../../data/models/user/DispatchApiModel";
+import {
+  collectTempFileIdsFromDispatchForm,
+  hasIncompleteDispatchUploads,
+} from "../../../data/models/user/DispatchMotorDataModel";
+import {
+  appendDispatchMotorToState,
+  createDefaultDispatchFormState,
+  createEmptyDispatchMotorSession,
+  hasMotorDispatchValue,
+  isDispatchMotorEditable,
+  isDispatchMotorSetupReady,
+  mapDispatchFormStateToBackendPayload,
+  mapDispatchFormStateToUpdatePayload,
+  mapDispatchMotorStatusesFromApi,
+  type DispatchFormState,
+  type DispatchMotorSession,
+  type DispatchMotorStatusMeta,
+  type DispatchMotorSubmissionStatus,
+  type DispatchMotorSubmissionType,
+} from "../../../data/models/user/DispatchFormModel";
+import type { DispatchMotorData } from "../../../data/models/user/DispatchMotorDataModel";
+import {
+  firstDispatchValidationError,
+  focusDispatchField,
+  resolveFirstDispatchValidationFocus,
+  validateDispatchMotorSession,
+  type ValidationErrors as DispatchValidationErrors,
+} from "../../../data/validation/adapters/dispatch.validation";
+import { reconcileLiveValidationErrors } from "../../../data/validation/utils/reconcileLiveValidationErrors";
+import { normalizeSubdepartmentBatchStatus } from "../../../data/models/user/SubdepartmentBatchModel";
+import {
+  type DispatchAddedMotor,
+  type DispatchBatch,
+  normalizeDispatchMotorStage,
+  parseDispatchMotorIds,
+} from "./dispatchFlowConfig";
+import { OPERATION_STATUS } from "../../operationStatus";
+import { useSubdepartmentBatches } from "../useSubdepartmentBatches";
+import {
+  isMotorEnabledForWorkflowWithBatch,
+  resolvePreviousStageApprovedUnits,
+  type PreviousStageApprovedUnits,
+} from "../previousStageApproval";
+import {
+  fetchEnrichedBatchStageFields,
+  mergeBatchStageFields,
+  SUB_DEPT,
+} from "../../../utils/batchStageUtils";
+import { handleBatchInvalidState } from "../../../utils/batchInvalidStateHandler";
+
+type WorkflowView = "list" | "form" | "details";
+
+const messages = STRINGS.DISPATCH;
+
+const normalizeBatch = (batch: any): DispatchBatch => {
+  const motorIds = Array.isArray(batch?.motorIds)
+    ? batch.motorIds.map((id: unknown) => String(id).trim()).filter(Boolean)
+    : parseDispatchMotorIds(batch?.motorId);
+
+  return {
+    ...batch,
+    id: batch?.id ?? batch?.batchId ?? "",
+    batchId: String(batch?.batchId ?? "").trim(),
+    projectId: batch?.projectId ?? batch?.projectName ?? "",
+    projectName: batch?.projectName ?? batch?.projectId ?? "",
+    dispatchStatus: batch?.dispatchStatus ?? batch?.status ?? OPERATION_STATUS.TO_BE_INITIATED,
+    formId: batch?.formId ?? null,
+    motorIds,
+    motorId: motorIds.length > 0 ? motorIds.join(", ") : String(batch?.motorId ?? "").trim(),
+    motorType: String(batch?.motorType ?? batch?.motorStage ?? ""),
+    motorStage: normalizeDispatchMotorStage(batch?.motorStage ?? batch?.motorType),
+    priority: String(batch?.priority ?? ""),
+    assignedTo: batch?.assignedTo ?? null,
+    createdOn: String(batch?.createdOn ?? ""),
+    rejectionReason: batch?.rejectionReason ?? null,
+    stageProgress: batch?.stageProgress,
+    currentStage: batch?.currentStage ?? null,
+  };
+};
+
+const resolveDispatchFormId = (batch?: DispatchBatch | null) =>
+  String(batch?.formId ?? "").trim() || null;
+
+const resolveBatchMotorEntries = (
+  batch: DispatchBatch | null,
+  batchDetails: any,
+): DispatchAddedMotor[] => {
+  const collectIds = (source: any): string[] => {
+    const ids: string[] = [];
+    const push = (value: unknown) => {
+      const normalized = String(value ?? "").trim();
+      if (normalized) ids.push(normalized);
+    };
+
+    if (Array.isArray(source?.motorIds)) {
+      source.motorIds.forEach((value: unknown) => push(value));
+    }
+    if (Array.isArray(source?.motors)) {
+      source.motors.forEach((motor: any) => {
+        push(motor?.motorId ?? motor?.motorNo ?? motor?.motorNumber ?? motor?.id);
+      });
+    }
+    if (source?.motorId != null) {
+      parseDispatchMotorIds(source.motorId).forEach((id) => push(id));
+    }
+    return ids.filter((id, index, arr) => arr.indexOf(id) === index);
+  };
+
+  const motorIds = collectIds(batchDetails ?? batch ?? {});
+  if (motorIds.length === 0) {
+    const direct = parseDispatchMotorIds(batch?.motorId);
+    return direct.map((motorId) => ({ motorId }));
+  }
+  return motorIds.map((motorId) => ({ motorId }));
+};
+
+/**
+ * Always show every batch motor as a tab. Overlay saved form data when present
+ * so a partial draft still lists remaining motors.
+ */
+const mergeMotorsFromBatchAndForm = (
+  batchEntries: DispatchAddedMotor[],
+  formData: DispatchFormState,
+): { formData: DispatchFormState; addedMotors: DispatchAddedMotor[] } => {
+  if (!batchEntries.length) {
+    return {
+      formData,
+      addedMotors: (formData.motors ?? []).map((motor) => ({ motorId: motor.motorId })),
+    };
+  }
+
+  const fromFormById = new Map((formData.motors ?? []).map((motor) => [motor.motorId, motor]));
+  const batchIds = new Set(batchEntries.map((entry) => entry.motorId));
+
+  const motors: DispatchMotorSession[] = batchEntries.map((entry) => {
+    const existing = fromFormById.get(entry.motorId);
+    if (existing) return existing;
+    return createEmptyDispatchMotorSession(entry.motorId);
+  });
+
+  (formData.motors ?? []).forEach((motor) => {
+    if (!batchIds.has(motor.motorId)) motors.push(motor);
+  });
+
+  return {
+    formData: {
+      ...formData,
+      motors,
+    },
+    addedMotors: motors.map((motor) => ({ motorId: motor.motorId })),
+  };
+};
+
+export const useDispatchHook = () => {
+  const listParams = useSubdepartmentBatches("dispatch");
+  const user = useAuthStore((state) => state.user);
+  const showAlert = useAlertStore((state) => state.showAlert);
+  const showValidationAlert = useAlertStore((state) => state.showValidationAlert);
+  const bumpBatchRefresh = useUserBatchRefreshStore((state) => state.bumpVersion);
+  const { deleteTemp } = useFileService();
+
+  const subDepartmentId = useMemo(
+    () =>
+      user?.allSubDepartments.find((subDept) => subDept.slugs?.subDept === "dispatch")
+        ?.subDepartmentId,
+    [user],
+  );
+
+  const [view, setView] = useState<WorkflowView>("list");
+  const [activeBatch, setActiveBatch] = useState<DispatchBatch | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [loadingFormDetails, setLoadingFormDetails] = useState(false);
+  const [detailsRow, setDetailsRow] = useState<any>(null);
+  const [detailsData, setDetailsData] = useState<any>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [backConfirmOpen, setBackConfirmOpen] = useState(false);
+  const [hasSavedDraft, setHasSavedDraft] = useState(false);
+  const [formData, setFormData] = useState<DispatchFormState>(() =>
+    createDefaultDispatchFormState(),
+  );
+  const [initialSnapshot, setInitialSnapshot] = useState("{}");
+  const [draftMotorId, setDraftMotorId] = useState("");
+  const [addedMotors, setAddedMotors] = useState<DispatchAddedMotor[]>([]);
+  const [batchMotorEntries, setBatchMotorEntries] = useState<DispatchAddedMotor[]>([]);
+  const [motorStatusById, setMotorStatusById] = useState<Record<string, DispatchMotorStatusMeta>>(
+    {},
+  );
+  const [previousStageGate, setPreviousStageGate] =
+    useState<PreviousStageApprovedUnits | null>(null);
+  const [motorValidationErrors, setMotorValidationErrors] = useState<
+    Record<string, DispatchValidationErrors>
+  >({});
+  const [validationFocusRequest, setValidationFocusRequest] = useState<{
+    id: number;
+    motorId: string;
+    fieldPath: string;
+  } | null>(null);
+
+  const notifyDispatchValidationErrors = useCallback(
+    (fieldErrors: DispatchValidationErrors, intent: "draft" | "submit") => {
+      const firstError = firstDispatchValidationError(fieldErrors);
+      const base =
+        intent === "draft" ? messages.DRAFT_VALIDATION_FAILED : messages.SUBMIT_VALIDATION_FAILED;
+      showValidationAlert(firstError ? `${base} (${firstError})` : base);
+    },
+    [showValidationAlert],
+  );
+
+  const emitDispatchValidationFocus = useCallback(
+    (motorId: string, fieldErrors: DispatchValidationErrors) => {
+      const fieldPath = resolveFirstDispatchValidationFocus(fieldErrors);
+      if (!fieldPath) return;
+      setValidationFocusRequest((prev) => ({
+        id: (prev?.id ?? 0) + 1,
+        motorId: String(motorId ?? "").trim(),
+        fieldPath,
+      }));
+      requestAnimationFrame(() => {
+        focusDispatchField(fieldPath);
+      });
+    },
+    [],
+  );
+
+  const resetFlowDraft = useCallback(() => {
+    setDraftMotorId("");
+  }, []);
+
+  const batches = useMemo(
+    () => (listParams.batches ?? []).map(normalizeBatch),
+    [listParams.batches],
+  );
+
+  const formSnapshot = useMemo(
+    () => JSON.stringify({ formData, addedMotors, motorStatusById }),
+    [formData, addedMotors, motorStatusById],
+  );
+
+  const isFormDirty = useMemo(
+    () => view === "form" && formSnapshot !== initialSnapshot,
+    [view, formSnapshot, initialSnapshot],
+  );
+
+  const snapshotStateRef = useRef({ formData, addedMotors, motorStatusById });
+  snapshotStateRef.current = { formData, addedMotors, motorStatusById };
+  const initialSnapshotRef = useRef(initialSnapshot);
+  initialSnapshotRef.current = initialSnapshot;
+
+  const resetFormContext = useCallback(() => {
+    const defaults = createDefaultDispatchFormState();
+    setView("list");
+    setActiveBatch(null);
+    setIsEditMode(false);
+    setFormData(defaults);
+    setInitialSnapshot(
+      JSON.stringify({ formData: defaults, addedMotors: [], motorStatusById: {} }),
+    );
+    setLoadingFormDetails(false);
+    setActionLoading(false);
+    setBackConfirmOpen(false);
+    setHasSavedDraft(false);
+    setDetailsRow(null);
+    setDetailsData(null);
+    setAddedMotors([]);
+    setBatchMotorEntries([]);
+    setMotorStatusById({});
+    setPreviousStageGate(null);
+    setMotorValidationErrors({});
+    setValidationFocusRequest(null);
+    resetFlowDraft();
+  }, [resetFlowDraft]);
+
+  const getErrorMessage = (response: any, fallbackMessage: string) => {
+    if (response?.error?.details) return response.error.details;
+    if (response?.message) return response.message;
+    return fallbackMessage;
+  };
+
+  const appendMotorToForm = useCallback(
+    (motorId: string, dispatchDetails?: Record<string, unknown>) => {
+      const trimmedId = String(motorId ?? "").trim();
+      if (!trimmedId) return false;
+
+      setFormData((prev) => appendDispatchMotorToState(prev, trimmedId, dispatchDetails));
+      setAddedMotors((prev) =>
+        prev.some((motor) => motor.motorId === trimmedId)
+          ? prev
+          : [...prev, { motorId: trimmedId }],
+      );
+      resetFlowDraft();
+      return true;
+    },
+    [resetFlowDraft],
+  );
+
+  const fetchQcSeedForMotor = useCallback(
+    async (motorId: string): Promise<Record<string, unknown> | undefined> => {
+      const batchId = String(activeBatch?.batchId ?? "").trim();
+      if (!batchId || !motorId) return undefined;
+      const response = await dispatchController.fetchMotorDetails({ batchId, motorId });
+      if (!response?.success || !response.data) return undefined;
+      const seed = response.data.motors?.find(
+        (entry) => String(entry.motorId ?? "").trim() === motorId,
+      );
+      return seed?.dispatchDetails;
+    },
+    [activeBatch?.batchId],
+  );
+
+  const updateSetupField = useCallback(
+    <K extends keyof DispatchFormState>(field: K, value: DispatchFormState[K]) => {
+      setFormData((prev) => {
+        const next = { ...prev, [field]: value };
+        if (field === "ndtClearance" && value !== "YES") next.ndtMomNo = "";
+        if (field === "finalAcceptanceClearance" && value !== "YES") {
+          next.finalAcceptanceMomNo = "";
+        }
+        return next;
+      });
+      if (field === "motorStage") setDraftMotorId("");
+    },
+    [],
+  );
+
+  const handleLoadDispatchForm = useCallback(
+    async (targetMotorId?: string) => {
+      const idToLoad = String(targetMotorId || draftMotorId || "").trim();
+      if (!idToLoad) return false;
+
+      const existing = (formData.motors ?? []).find((motor) => motor.motorId === idToLoad);
+      const status =
+        motorStatusById[idToLoad]?.motorSubmissionStatus ?? "TO_BE_INITIATED";
+      const shouldSeedFromQc =
+        status === "TO_BE_INITIATED" &&
+        (!existing?.formLoaded || !hasMotorDispatchValue(formData, idToLoad));
+
+      let seedDetails: Record<string, unknown> | undefined;
+      if (shouldSeedFromQc) {
+        try {
+          seedDetails = await fetchQcSeedForMotor(idToLoad);
+        } catch (error) {
+          console.error("Unable to seed Dispatch motor from QC Division", error);
+        }
+      }
+
+      return appendMotorToForm(idToLoad, seedDetails);
+    },
+    [
+      appendMotorToForm,
+      draftMotorId,
+      fetchQcSeedForMotor,
+      formData,
+      motorStatusById,
+    ],
+  );
+
+  const handleDraftMotorIdChange = useCallback((value: string) => {
+    setDraftMotorId(value);
+  }, []);
+
+  const handleMotorDataChange = useCallback((motorId: string, dispatchData: DispatchMotorData) => {
+    setFormData((prev) => {
+      const nextMotors = (prev.motors ?? []).map((motor) =>
+        motor.motorId === motorId ? { ...motor, dispatchData } : motor,
+      );
+      const motor = nextMotors.find((m) => m.motorId === motorId);
+      if (motor) {
+        const liveFormat = validateDispatchMotorSession(motor, "FORMAT");
+        const liveFull = validateDispatchMotorSession(motor, "SUBMIT");
+        setMotorValidationErrors((errs) => {
+          const merged = reconcileLiveValidationErrors(errs[motorId], liveFormat, liveFull);
+          if (Object.keys(merged).length === 0) {
+            if (!errs[motorId]) return errs;
+            const next = { ...errs };
+            delete next[motorId];
+            return next;
+          }
+          return { ...errs, [motorId]: merged };
+        });
+      }
+      return { ...prev, motors: nextMotors };
+    });
+  }, []);
+
+  const openFormWithResolvedData = useCallback(
+    async (
+      batch: DispatchBatch,
+      editMode: boolean,
+      options?: { silent?: boolean },
+    ) => {
+      const silent = Boolean(options?.silent);
+      const formId = resolveDispatchFormId(batch);
+      const shouldFetchDetails =
+        silent ||
+        editMode ||
+        batch.dispatchStatus === OPERATION_STATUS.IN_PROGRESS ||
+        batch.dispatchStatus === OPERATION_STATUS.REJECTED ||
+        String(batch.dispatchStatus ?? "")
+          .toLowerCase()
+          .includes("partial") ||
+        Boolean(String(formId ?? "").trim());
+
+      let nextBatch: DispatchBatch = { ...batch };
+      let resolvedData = createDefaultDispatchFormState();
+      let autoMotorEntries: DispatchAddedMotor[] = [];
+      let nextStatuses: Record<string, DispatchMotorStatusMeta> = {};
+      let rejectionReason = batch.rejectionReason ?? null;
+
+      if (!silent) setLoadingFormDetails(true);
+      try {
+        if (batch.batchId) {
+          try {
+            const batchDetails = await batchManagementController.getBatchById(batch.batchId);
+            autoMotorEntries = resolveBatchMotorEntries(batch, batchDetails);
+            nextBatch = mergeBatchStageFields(
+              {
+                ...batch,
+                motorIds: batchDetails?.motorIds?.length
+                  ? batchDetails.motorIds.map(String)
+                  : batch.motorIds,
+                motorId:
+                  batchDetails?.motorIds?.length > 0
+                    ? batchDetails.motorIds.join(", ")
+                    : batch.motorId,
+              },
+              batchDetails as Record<string, unknown>,
+            );
+          } catch (error) {
+            console.error("Unable to resolve batch motor details", error);
+            autoMotorEntries = resolveBatchMotorEntries(batch, null);
+          }
+        } else {
+          autoMotorEntries = resolveBatchMotorEntries(batch, null);
+        }
+
+        setPreviousStageGate(
+          resolvePreviousStageApprovedUnits({
+            stageProgress: nextBatch.stageProgress ?? batch.stageProgress,
+            currentStage: nextBatch.currentStage ?? batch.currentStage,
+            currentSlug: "dispatch",
+            currentSubDepartmentId: subDepartmentId,
+            subDepartments: user?.allSubDepartments,
+          }),
+        );
+
+        if (shouldFetchDetails) {
+          if (!subDepartmentId) {
+            showAlert(messages.SUB_DEPARTMENT_MISSING, "error");
+            return;
+          }
+          const resolvedFormId = resolveDispatchFormId(batch);
+          if (!resolvedFormId) {
+            showAlert(messages.FORM_ID_MISSING, "error");
+            return;
+          }
+
+          const detailsResponse = await dispatchController.fetchFormDetails({
+            formId: resolvedFormId,
+          });
+          if (!detailsResponse?.success || !detailsResponse.data) {
+            const fallback =
+              detailsResponse?.statusCode === 404
+                ? messages.DETAILS_NOT_FOUND
+                : messages.DETAILS_FETCH_ERROR;
+            showAlert(getErrorMessage(detailsResponse, fallback), "error");
+            return;
+          }
+
+          resolvedData = DispatchDetailsModel.toFormState(detailsResponse.data);
+          nextBatch = {
+            ...nextBatch,
+            formId: detailsResponse.data.formId || resolvedFormId,
+            ...(detailsResponse.data.status
+              ? {
+                  dispatchStatus: normalizeSubdepartmentBatchStatus(
+                    detailsResponse.data.status,
+                  ),
+                }
+              : {}),
+          };
+          rejectionReason =
+            detailsResponse.data.workflowInsights?.rejectionReason ?? rejectionReason;
+          nextStatuses =
+            detailsResponse.data.motorStatuses &&
+            Object.keys(detailsResponse.data.motorStatuses).length > 0
+              ? detailsResponse.data.motorStatuses
+              : mapDispatchMotorStatusesFromApi(detailsResponse.data);
+        } else {
+          resolvedData = {
+            ...resolvedData,
+            motorStage: normalizeDispatchMotorStage(batch.motorStage ?? batch.motorType),
+          };
+        }
+      } finally {
+        if (!silent) setLoadingFormDetails(false);
+      }
+
+      const merged = mergeMotorsFromBatchAndForm(autoMotorEntries, resolvedData);
+      resolvedData = merged.formData;
+      const nextAddedMotors = merged.addedMotors;
+
+      if (Object.keys(nextStatuses).length === 0) {
+        nextStatuses = Object.fromEntries(
+          nextAddedMotors.map((entry) => [
+            entry.motorId,
+            { motorSubmissionStatus: "TO_BE_INITIATED" as DispatchMotorSubmissionStatus },
+          ]),
+        );
+      } else {
+        nextAddedMotors.forEach((entry) => {
+          if (!nextStatuses[entry.motorId]) {
+            nextStatuses[entry.motorId] = { motorSubmissionStatus: "TO_BE_INITIATED" };
+          }
+        });
+      }
+
+      setActiveBatch({
+        ...nextBatch,
+        formId: resolveDispatchFormId(nextBatch),
+        rejectionReason,
+      });
+      setFormData(resolvedData);
+      setAddedMotors(nextAddedMotors);
+      setBatchMotorEntries(autoMotorEntries);
+      setMotorStatusById(nextStatuses);
+      setIsEditMode(editMode);
+      setView("form");
+      setMotorValidationErrors({});
+      resetFlowDraft();
+      setInitialSnapshot(
+        JSON.stringify({
+          formData: resolvedData,
+          addedMotors: nextAddedMotors,
+          motorStatusById: nextStatuses,
+        }),
+      );
+    },
+    [resetFlowDraft, showAlert, subDepartmentId, user?.allSubDepartments],
+  );
+
+  const handleViewDispatchDetails = useCallback(
+    async (row: DispatchBatch) => {
+      if (!row.formId) {
+        showAlert(messages.FORM_ID_MISSING, "error");
+        return;
+      }
+
+      setDetailsLoading(true);
+      const response = await dispatchController.fetchFormDetails({ formId: row.formId });
+      setDetailsLoading(false);
+
+      if (!response?.success || !response?.data) {
+        showAlert(getErrorMessage(response, messages.DETAILS_FETCH_ERROR), "error");
+        return;
+      }
+
+      setDetailsRow(row);
+      setDetailsData(response.data);
+      setView("details");
+    },
+    [showAlert],
+  );
+
+  const handleBackFromDetails = useCallback(() => {
+    setDetailsRow(null);
+    setDetailsData(null);
+    setView("list");
+    bumpBatchRefresh();
+  }, [bumpBatchRefresh]);
+
+  const handleFillForm = useCallback(
+    async (batch: DispatchBatch) => openFormWithResolvedData(batch, false),
+    [openFormWithResolvedData],
+  );
+
+  const handleEditForm = useCallback(
+    async (batch: DispatchBatch) => openFormWithResolvedData(batch, true),
+    [openFormWithResolvedData],
+  );
+
+  const handleBack = useCallback(() => {
+    if (view === "form" && isFormDirty) {
+      setBackConfirmOpen(true);
+      return;
+    }
+    bumpBatchRefresh();
+    resetFormContext();
+  }, [view, isFormDirty, bumpBatchRefresh, resetFormContext]);
+
+  const handleDiscardAndBack = useCallback(async () => {
+    setBackConfirmOpen(false);
+    await discardWorkflowSnapshotForm({
+      subDepartmentId,
+      initialSnapshot: initialSnapshotRef.current,
+      currentState: snapshotStateRef.current,
+      deleteTemp,
+      extractTempFileIds: (state) => collectTempFileIdsFromDispatchForm(state.formData),
+      resetForm: () => {
+        bumpBatchRefresh();
+        resetFormContext();
+      },
+    });
+  }, [bumpBatchRefresh, deleteTemp, resetFormContext, subDepartmentId]);
+
+  const getMotorStatus = useCallback(
+    (motorId: string): DispatchMotorSubmissionStatus =>
+      motorStatusById[motorId]?.motorSubmissionStatus ?? "TO_BE_INITIATED",
+    [motorStatusById],
+  );
+
+  const checkMotorEditable = useCallback(
+    (motorId: string) => {
+      if (
+        !isMotorEnabledForWorkflowWithBatch(
+          activeBatch,
+          subDepartmentId ?? SUB_DEPT.DISPATCH,
+          motorId,
+          addedMotors.map((motor) => motor.motorId),
+          previousStageGate,
+          getMotorStatus,
+        )
+      ) {
+        return false;
+      }
+      return isDispatchMotorEditable(getMotorStatus(motorId));
+    },
+    [activeBatch, addedMotors, getMotorStatus, previousStageGate, subDepartmentId],
+  );
+
+  const submitMotor = useCallback(
+    async (motorId: string, intent: "draft" | "submit") => {
+      if (!activeBatch) return false;
+      if (!subDepartmentId) {
+        showAlert(messages.SUB_DEPARTMENT_MISSING, "error");
+        return false;
+      }
+      if (
+        !isMotorEnabledForWorkflowWithBatch(
+          activeBatch,
+          subDepartmentId ?? SUB_DEPT.DISPATCH,
+          motorId,
+          addedMotors.map((motor) => motor.motorId),
+          previousStageGate,
+          getMotorStatus,
+        )
+      ) {
+        showAlert(STRINGS.MANUFACTURING.PREVIOUS_STAGE_UNIT_DISABLED, "warning");
+        return false;
+      }
+      if (!checkMotorEditable(motorId)) {
+        showAlert(
+          getMotorStatus(motorId) === "APPROVED"
+            ? messages.MOTOR_LOCKED_APPROVED
+            : messages.MOTOR_LOCKED_WAITING,
+          "warning",
+        );
+        return false;
+      }
+
+      const motor = (formData.motors ?? []).find((entry) => entry.motorId === motorId);
+      if (!motor || !isDispatchMotorSetupReady(motor) || !motor.formLoaded) {
+        showAlert(messages.SCHEMA_NOT_LOADED, "warning");
+        return false;
+      }
+      if (hasIncompleteDispatchUploads(formData)) {
+        showAlert(messages.FILE_UPLOAD_PENDING, "warning");
+        return false;
+      }
+      if (intent === "submit" && !hasMotorDispatchValue(formData, motorId)) {
+        showAlert(messages.EMPTY_FORM_ERROR, "warning");
+        return false;
+      }
+      if (intent === "draft" && !hasMotorDispatchValue(formData, motorId)) {
+        showAlert(messages.EMPTY_FORM_ERROR, "warning");
+        return false;
+      }
+
+      // UNIT on draft; SUBMIT on submit — snackbar + field highlights + focus/scroll.
+      {
+        const tier = intent === "draft" ? "UNIT" : "SUBMIT";
+        const fieldErrors = validateDispatchMotorSession(motor, tier);
+        if (Object.keys(fieldErrors).length > 0) {
+          setMotorValidationErrors((prev) => ({ ...prev, [motorId]: fieldErrors }));
+          notifyDispatchValidationErrors(fieldErrors, intent);
+          emitDispatchValidationFocus(motorId, fieldErrors);
+          return false;
+        }
+        setMotorValidationErrors((prev) => {
+          if (!prev[motorId]) return prev;
+          const next = { ...prev };
+          delete next[motorId];
+          return next;
+        });
+      }
+
+      const motorSubmissionType: DispatchMotorSubmissionType =
+        intent === "draft" ? "DRAFT" : "SUBMIT";
+      const isCreateFlow = !resolveDispatchFormId(activeBatch);
+      const options = { targetMotorIds: [motorId], motorSubmissionType };
+
+      let mappedPayload;
+      if (isCreateFlow) {
+        if (!activeBatch.batchId) {
+          showAlert(messages.BATCH_ID_MISSING, "error");
+          return false;
+        }
+        mappedPayload = mapDispatchFormStateToBackendPayload(
+          formData,
+          activeBatch.batchId,
+          subDepartmentId,
+          "DRAFT",
+          options,
+        );
+      } else {
+        const formId = resolveDispatchFormId(activeBatch);
+        if (!formId) {
+          showAlert(messages.FORM_ID_MISSING, "error");
+          return false;
+        }
+        mappedPayload = mapDispatchFormStateToUpdatePayload(
+          formData,
+          formId,
+          activeBatch.batchId,
+          subDepartmentId,
+          "DRAFT",
+          options,
+        );
+      }
+
+      if (!mappedPayload.motors?.length) {
+        showAlert(messages.EMPTY_FORM_ERROR, "warning");
+        return false;
+      }
+
+      setActionLoading(true);
+      try {
+        const response = isCreateFlow
+          ? await dispatchController.createForm(mappedPayload)
+          : await dispatchController.updateForm(mappedPayload);
+
+        if (!response?.success) {
+          showAlert(
+            getErrorMessage(
+              response,
+              isCreateFlow ? messages.CREATE_FAILED : messages.UPDATE_FAILED,
+            ),
+            "error",
+          );
+          return false;
+        }
+
+        const nextFormId = response.data?.formId ?? activeBatch.formId ?? null;
+        setActiveBatch((prev) => (prev ? { ...prev, formId: nextFormId } : prev));
+        setHasSavedDraft(true);
+
+        const nextStatus: DispatchMotorSubmissionStatus =
+          intent === "draft" ? "IN_PROGRESS" : "WAITING_FOR_APPROVAL";
+
+        setMotorStatusById((prev) => {
+          const updated: Record<string, DispatchMotorStatusMeta> = {
+            ...prev,
+            [motorId]: {
+              ...prev[motorId],
+              motorSubmissionType,
+              motorSubmissionStatus: nextStatus,
+            },
+          };
+          if (Array.isArray(response.data?.motorStatuses)) {
+            response.data.motorStatuses.forEach((entry: any) => {
+              const id = String(entry?.motorId ?? "").trim();
+              if (!id) return;
+              updated[id] = {
+                ...updated[id],
+                motorSubmissionType:
+                  entry.motorSubmissionType ?? updated[id]?.motorSubmissionType,
+                motorSubmissionStatus:
+                  (String(entry.motorSubmissionStatus ?? "").toUpperCase() as DispatchMotorSubmissionStatus) ||
+                  updated[id]?.motorSubmissionStatus ||
+                  "TO_BE_INITIATED",
+              };
+            });
+          }
+          return updated;
+        });
+
+        setInitialSnapshot(
+          JSON.stringify({
+            formData,
+            addedMotors,
+            motorStatusById: {
+              ...motorStatusById,
+              [motorId]: {
+                ...motorStatusById[motorId],
+                motorSubmissionType,
+                motorSubmissionStatus: nextStatus,
+              },
+            },
+          }),
+        );
+
+        showAlert(
+          intent === "draft"
+            ? messages.MOTOR_SAVE_DRAFT_SUCCESS(motorId)
+            : messages.MOTOR_SUBMIT_SUCCESS(motorId),
+          "success",
+          { autoCloseMs: 2200 },
+        );
+
+        await listParams.refreshUserBatches();
+        let batchForRefresh: DispatchBatch = {
+          ...activeBatch,
+          formId: nextFormId,
+        };
+        if (activeBatch.batchId) {
+          const stageFields = await fetchEnrichedBatchStageFields(activeBatch.batchId);
+          if (stageFields) {
+            batchForRefresh = mergeBatchStageFields(batchForRefresh, stageFields);
+            setActiveBatch((prev) => (prev ? mergeBatchStageFields(prev, stageFields) : prev));
+            setPreviousStageGate(
+              resolvePreviousStageApprovedUnits({
+                stageProgress: stageFields.stageProgress ?? activeBatch.stageProgress,
+                currentStage: stageFields.currentStage ?? activeBatch.currentStage,
+                currentSlug: "dispatch",
+                currentSubDepartmentId: subDepartmentId,
+                subDepartments: user?.allSubDepartments,
+              }),
+            );
+          }
+        }
+        bumpBatchRefresh();
+
+        const formIdForRefresh = String(nextFormId ?? activeBatch.formId ?? "").trim();
+        if (formIdForRefresh) {
+          const statusForBanner = String(
+            response.data?.status ?? activeBatch.dispatchStatus ?? "IN_PROGRESS",
+          )
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, "_");
+          const stillRejectedEdit = statusForBanner === "REJECTED";
+
+          await openFormWithResolvedData(
+            {
+              ...batchForRefresh,
+              formId: formIdForRefresh,
+              dispatchStatus: response.data?.status ?? activeBatch.dispatchStatus ?? "IN_PROGRESS",
+            },
+            stillRejectedEdit,
+            { silent: true },
+          );
+        }
+
+        return true;
+      } catch (error) {
+        const handled = await handleBatchInvalidState(
+          error,
+          async () => {
+            await listParams.refreshUserBatches();
+            const batchSnapshot = activeBatch;
+            if (batchSnapshot?.batchId) {
+              const stageFields = await fetchEnrichedBatchStageFields(batchSnapshot.batchId);
+              if (stageFields) {
+                setActiveBatch((prev) => (prev ? mergeBatchStageFields(prev, stageFields) : prev));
+                setPreviousStageGate(
+                  resolvePreviousStageApprovedUnits({
+                    stageProgress: stageFields.stageProgress ?? batchSnapshot.stageProgress,
+                    currentStage: stageFields.currentStage ?? batchSnapshot.currentStage,
+                    currentSlug: "dispatch",
+                    currentSubDepartmentId: subDepartmentId,
+                    subDepartments: user?.allSubDepartments,
+                  }),
+                );
+              }
+            }
+            if (batchSnapshot) {
+              await openFormWithResolvedData(batchSnapshot, isEditMode, { silent: true });
+            }
+            bumpBatchRefresh();
+          },
+          showAlert,
+        );
+        if (handled) return false;
+        showAlert(getErrorMessage(error, messages.UPDATE_FAILED), "error");
+        return false;
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [
+      activeBatch,
+      addedMotors,
+      bumpBatchRefresh,
+      checkMotorEditable,
+      emitDispatchValidationFocus,
+      formData,
+      getMotorStatus,
+      isEditMode,
+      listParams,
+      motorStatusById,
+      notifyDispatchValidationErrors,
+      openFormWithResolvedData,
+      previousStageGate,
+      showAlert,
+      subDepartmentId,
+      user?.allSubDepartments,
+    ],
+  );
+
+  const handleSaveMotorDraft = useCallback(
+    async (motorId: string) => submitMotor(motorId, "draft"),
+    [submitMotor],
+  );
+
+  const handleSubmitMotor = useCallback(
+    async (motorId: string) => submitMotor(motorId, "submit"),
+    [submitMotor],
+  );
+
+  return {
+    ...listParams,
+    loading: listParams.loading || loadingFormDetails,
+    loadingFormDetails,
+    batches,
+    view,
+    activeBatch,
+    isEditMode,
+    formData,
+    isFormDirty,
+    draftMotorId,
+    addedMotors,
+    batchMotorEntries,
+    motorStatusById,
+    getMotorStatus,
+    isMotorEditable: checkMotorEditable,
+    previousStageGate,
+    actionLoading,
+    backConfirmOpen,
+    subDepartmentId,
+    motorValidationErrors,
+    validationFocusRequest,
+    handleFillForm,
+    handleEditForm,
+    handleBack,
+    handleDiscardAndBack,
+    setBackConfirmOpen,
+    updateSetupField,
+    handleDraftMotorIdChange,
+    handleLoadDispatchForm,
+    handleMotorDataChange,
+    handleSaveMotorDraft,
+    handleSubmitMotor,
+    detailsRow,
+    detailsData,
+    detailsLoading,
+    handleViewDispatchDetails,
+    handleBackFromDetails,
+  };
+};
+
+export default useDispatchHook;

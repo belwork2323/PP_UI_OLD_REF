@@ -1,0 +1,265 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMasterDataActiveToggle } from "@hooks/admin/MasterData/useMasterDataActiveToggle";
+import { useAlertStore } from "@app/store/alertStore";
+import { STRINGS } from "@app/config/strings";
+import { ApiResponseModel } from "@data/models/common/ApiResponseModel";
+import { getMasterDataErrorMessage } from "@data/models/admin/MasterData/MasterDataModel";
+import {
+  buildQualityCheckCreatePayload,
+  buildQualityCheckDeletePayload,
+  buildQualityCheckUpdatePayload,
+  createEmptyQualityCheckForm,
+  emptyMasterDataStats,
+  mapQualityCheckRecordToForm,
+  QualityCheckListModel,
+  validateQualityCheckForm,
+  type QualityCheckFormState,
+  type QualityCheckListPayload,
+  type QualityCheckRecord,
+} from "@data/models/admin/MasterData/QualityCheckMasterModel";
+import {
+  createQualityCheckMaster,
+  deleteQualityCheckMaster,
+  enableQualityCheckMaster,
+  fetchQualityCheckMasterList,
+  updateQualityCheckMaster,
+} from "@data/api/admin/MasterData/qualityCheckMasterApi";
+
+const S = STRINGS.MASTER_DATA;
+
+type Options = {
+  activeFilter: "ALL" | "ACTIVE" | "INACTIVE";
+  refreshKey?: number;
+  onListPayloadChange?: (payload: QualityCheckListPayload | null) => void;
+  onStatsChange?: (stats: { total: number; active: number; inactive: number }) => void;
+};
+
+export default function useQualityCheckMasterHook({
+  activeFilter,
+  refreshKey = 0,
+  onListPayloadChange,
+  onStatsChange,
+}: Options) {
+  const onListPayloadChangeRef = useRef(onListPayloadChange);
+  const onStatsChangeRef = useRef(onStatsChange);
+  onListPayloadChangeRef.current = onListPayloadChange;
+  onStatsChangeRef.current = onStatsChange;
+
+  const [items, setItems] = useState<QualityCheckRecord[]>([]);
+  const [listPayload, setListPayload] = useState<QualityCheckListPayload | null>(null);
+  const [stats, setStats] = useState(emptyMasterDataStats());
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [motorStageFilter, setMotorStageFilter] = useState("");
+  const [mixTypeFilter, setMixTypeFilter] = useState("");
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [inlineMode, setInlineMode] = useState<"create" | "edit" | null>(null);
+  const [form, setForm] = useState<QualityCheckFormState>(createEmptyQualityCheckForm());
+  const [saving, setSaving] = useState(false);
+  const [disabling, setDisabling] = useState(false);
+  const [enabling, setEnabling] = useState(false);
+
+  const loadList = useCallback(async () => {
+    setLoading(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (search.trim()) body.search = search.trim();
+      if (activeFilter === "ACTIVE") body.isActive = true;
+      if (activeFilter === "INACTIVE") body.isActive = false;
+      if (motorStageFilter) body.motorStage = Number(motorStageFilter);
+      if (mixTypeFilter) body.mixType = mixTypeFilter;
+      const resp = new ApiResponseModel(await fetchQualityCheckMasterList(body), QualityCheckListModel.fromApi);
+      if (resp.success && resp.data) {
+        setListPayload(resp.data);
+        setItems(resp.data.items);
+        setStats(resp.data.stats);
+        onListPayloadChangeRef.current?.(resp.data);
+        onStatsChangeRef.current?.(resp.data.stats);
+      } else {
+        setListPayload(null);
+        setItems([]);
+        setStats(emptyMasterDataStats());
+        onListPayloadChangeRef.current?.(null);
+        onStatsChangeRef.current?.(emptyMasterDataStats());
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.LOAD_LIST_FAILED), "error");
+      }
+    } catch (err: any) {
+      setListPayload(null);
+      setItems([]);
+      setStats(emptyMasterDataStats());
+      onListPayloadChangeRef.current?.(null);
+      onStatsChangeRef.current?.(emptyMasterDataStats());
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(err?.response?.data, S.ERRORS.LOAD_LIST_FAILED), "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [activeFilter, mixTypeFilter, motorStageFilter, search]);
+
+  useEffect(() => {
+    setPage(0);
+    setInlineMode(null);
+    void loadList();
+  }, [loadList, refreshKey]);
+
+  const paginated = useMemo(() => {
+    const start = page * rowsPerPage;
+    return items.slice(start, start + rowsPerPage);
+  }, [items, page, rowsPerPage]);
+
+  const closeInline = () => {
+    if (saving) return;
+    setInlineMode(null);
+    setForm(createEmptyQualityCheckForm());
+  };
+
+  const openCreate = () => {
+    setForm(createEmptyQualityCheckForm());
+    setInlineMode("create");
+  };
+
+  const openEdit = (record: QualityCheckRecord) => {
+    setForm(mapQualityCheckRecordToForm(record));
+    setInlineMode("edit");
+  };
+
+  const saveForm = async () => {
+    const isEdit = inlineMode === "edit";
+    const err = validateQualityCheckForm(form, isEdit, items);
+    if (err) {
+      useAlertStore.getState().showValidationAlert(err);
+      return;
+    }
+    setSaving(true);
+    useAlertStore.getState().showAlert(isEdit ? S.MESSAGES.UPDATING : S.MESSAGES.CREATING, "loading");
+    try {
+      const raw = isEdit
+        ? await updateQualityCheckMaster(buildQualityCheckUpdatePayload(form))
+        : await createQualityCheckMaster(buildQualityCheckCreatePayload(form));
+      const resp = new ApiResponseModel(raw);
+      if (resp.success) {
+        useAlertStore
+          .getState()
+          .showAlert(isEdit ? S.MESSAGES.UPDATE_SUCCESS : S.MESSAGES.CREATE_SUCCESS, "success");
+        setInlineMode(null);
+        setForm(createEmptyQualityCheckForm());
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const enableRecord = useCallback(async (record: QualityCheckRecord) => {
+    setEnabling(true);
+    useAlertStore.getState().showAlert(S.MESSAGES.ENABLING, "loading");
+    try {
+      const resp = new ApiResponseModel(
+        await enableQualityCheckMaster(buildQualityCheckDeletePayload(record.id)),
+      );
+      if (resp.success) {
+        useAlertStore.getState().showAlert(S.MESSAGES.ENABLE_SUCCESS, "success");
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setEnabling(false);
+    }
+  }, [loadList]);
+
+  const disableRecord = useCallback(async (record: QualityCheckRecord) => {
+    setDisabling(true);
+    useAlertStore.getState().showAlert(S.MESSAGES.DISABLING, "loading");
+    try {
+      const resp = new ApiResponseModel(
+        await deleteQualityCheckMaster(buildQualityCheckDeletePayload(record.id)),
+      );
+      if (resp.success) {
+        useAlertStore.getState().showAlert(S.MESSAGES.DISABLE_SUCCESS, "success");
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setDisabling(false);
+    }
+  }, [loadList]);
+
+  const canToggle = useCallback(
+    () => inlineMode == null && !saving && !disabling && !enabling,
+    [inlineMode, saving, disabling, enabling],
+  );
+
+  const {
+    toggleTarget,
+    handleToggleActive,
+    confirmToggle,
+    cancelToggle,
+  } = useMasterDataActiveToggle({
+    canToggle,
+    enableRecord,
+    disableRecord,
+  });
+
+  return {
+    items,
+    paginated,
+    listPayload,
+    stats,
+    loading,
+    search,
+    setSearch: (v: string) => {
+      setSearch(v);
+      setPage(0);
+    },
+    motorStageFilter,
+    setMotorStageFilter: (v: string) => {
+      setMotorStageFilter(v);
+      setPage(0);
+    },
+    mixTypeFilter,
+    setMixTypeFilter: (v: string) => {
+      setMixTypeFilter(v);
+      setPage(0);
+    },
+    page,
+    setPage,
+    rowsPerPage,
+    setRowsPerPage: (n: number) => {
+      setRowsPerPage(n);
+      setPage(0);
+    },
+    inlineMode,
+    form,
+    setForm,
+    saving,
+    openCreate,
+    openEdit,
+    closeInline,
+    saveForm,
+    toggleTarget,
+    disabling,
+    enabling,
+    handleToggleActive,
+    confirmToggle,
+    cancelToggle,
+    refresh: loadList,
+  };
+}

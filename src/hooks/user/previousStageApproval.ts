@@ -1,0 +1,822 @@
+import {
+  findStageEntryForSubDepartment,
+  normalizeSubdepartmentBatchStatus,
+} from "../../data/models/user/SubdepartmentBatchModel";
+import type { BatchView } from "../../data/models/user/BatchStageTypes";
+import {
+  findMotorUnit,
+  findPremixUnit,
+  getActiveStage,
+  isMotorDisabled,
+  isPremixDisabled,
+  usesParallelUnitLocks,
+} from "../../utils/batchStageUtils";
+import { OPERATION_STATUS } from "../operationStatus";
+import { isMotorWorkflowTabDisabled } from "@data/models/common/motorWorkflowGuards";
+
+export type BatchStageContext = Pick<
+  BatchView,
+  "parallelFlowEnabled" | "currentStage" | "stageProgress"
+>;
+
+export type PartialFlowUnitKind = "premix" | "motor";
+
+export type StageProgressUnitStatus = {
+  premixNo?: number | string | null;
+  motorId?: string | null;
+  division?: string | null;
+  subType?: string | null;
+  stageType?: "PREMIX" | "FINAL_MIX" | string | null;
+  premixSubmissionType?: string | null;
+  premixSubmissionStatus?: string | null;
+  motorSubmissionType?: string | null;
+  motorSubmissionStatus?: string | null;
+  status?: string | null;
+  locked?: boolean | null;
+};
+
+export type StageProgressEntry = {
+  subDepartmentId?: number | null;
+  subDepartmentName?: string | null;
+  status?: string | null;
+  premixStatuses?: StageProgressUnitStatus[] | null;
+  motorStatuses?: StageProgressUnitStatus[] | null;
+  finalMixStatuses?: StageProgressUnitStatus[] | null;
+  /** QC catalog rows (server-authoritative division unlock / unit gates). */
+  divisionStatuses?: unknown[] | null;
+};
+
+export type PreviousStageApprovedUnits = {
+  /** Starter subdept (RMP premix / Case Prep motor) — all units enabled */
+  enableAll: boolean;
+  kind: PartialFlowUnitKind | null;
+  previousSubDepartmentId: number | null;
+  previousSubDepartmentName: string | null;
+  approvedPremixNos: Set<number>;
+  approvedMotorIds: Set<string>;
+  /** Mixing final-mix units, when gated separately from premix. */
+  approvedFinalMixNos?: Set<number>;
+  /** Optional tooltip/alert when this gate disables motors (e.g. Subscale wait). */
+  blockedMessage?: string | null;
+};
+
+type SubDeptRef = {
+  subDepartmentId?: number | null;
+  slugs?: { subDept?: string | null } | null;
+  subDepartmentName?: string | null;
+};
+
+const PREMIX_STARTER_SLUGS = new Set(["raw-material-prep", "raw-material-preparation"]);
+const MOTOR_STARTER_SLUGS = new Set(["case-preparation"]);
+
+/** Prior stage that must have approved the unit before the current subdept can work on it. */
+const PREDECESSOR_BY_SLUG: Record<string, { kind: PartialFlowUnitKind; predecessors: string[] }> = {
+  mixing: {
+    kind: "premix",
+    predecessors: ["raw-material-prep", "raw-material-preparation"],
+  },
+  "casting-and-curing": {
+    kind: "motor",
+    predecessors: ["case-preparation"],
+  },
+  "post-cure-operations": {
+    kind: "motor",
+    predecessors: ["casting-and-curing"],
+  },
+  trimming: {
+    kind: "motor",
+    predecessors: ["casting-and-curing"],
+  },
+  ndt: {
+    kind: "motor",
+    // Both Post Cure and Trimming must approve the motor (AND) — see resolveNdt…
+    predecessors: ["post-cure-operations", "trimming"],
+  },
+  "static-test-facility": {
+    kind: "motor",
+    // MAIN: NDT + subscale (see resolveStfPreviousStageApprovedUnits). Not QC.
+    predecessors: ["ndt", "subscale"],
+  },
+  dispatch: {
+    kind: "motor",
+    predecessors: ["static-test-facility", "ndt", "trimming", "post-cure-operations"],
+  },
+};
+
+const APPROVED_UNIT_STATUSES = new Set(["APPROVED", "COMPLETELY_APPROVED"]);
+
+const normalizeSlug = (slug?: string | null) =>
+  String(slug ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+
+const isApprovedUnitStatus = (status: unknown) => {
+  const upper = String(status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+  if (APPROVED_UNIT_STATUSES.has(upper)) return true;
+  const normalized = normalizeSubdepartmentBatchStatus(status);
+  return (
+    normalized === OPERATION_STATUS.APPROVED || normalized === OPERATION_STATUS.COMPLETELY_APPROVED
+  );
+};
+
+const emptyResult = (
+  kind: PartialFlowUnitKind | null,
+  enableAll: boolean,
+): PreviousStageApprovedUnits => ({
+  enableAll,
+  kind,
+  previousSubDepartmentId: null,
+  previousSubDepartmentName: null,
+  approvedPremixNos: new Set(),
+  approvedMotorIds: new Set(),
+});
+
+const asStageEntries = (stages: unknown): StageProgressEntry[] => {
+  if (!Array.isArray(stages)) return [];
+  return stages.filter((entry) => entry && typeof entry === "object") as StageProgressEntry[];
+};
+
+/** Prefer stageProgress order; overlay currentStage by subDepartmentId for latest statuses. */
+const mergeStageProgress = (
+  stageProgress?: unknown,
+  currentStage?: unknown,
+): StageProgressEntry[] => {
+  const progress = asStageEntries(stageProgress);
+  const current = asStageEntries(currentStage);
+  if (!progress.length) return current;
+  if (!current.length) return progress;
+
+  const currentById = new Map<number, StageProgressEntry>();
+  current.forEach((stage) => {
+    const id = Number(stage.subDepartmentId);
+    if (Number.isFinite(id) && id > 0) currentById.set(id, stage);
+  });
+
+  const merged = progress.map((stage) => {
+    const id = Number(stage.subDepartmentId);
+    return (Number.isFinite(id) && id > 0 && currentById.get(id)) || stage;
+  });
+
+  current.forEach((stage) => {
+    const id = Number(stage.subDepartmentId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (!merged.some((entry) => Number(entry.subDepartmentId) === id)) {
+      merged.push(stage);
+    }
+  });
+
+  return merged;
+};
+
+const collectApprovedPremixNos = (entry: StageProgressEntry | null): Set<number> => {
+  const ids = new Set<number>();
+  if (!entry) return ids;
+  const rows = [
+    ...(Array.isArray(entry.premixStatuses) ? entry.premixStatuses : []),
+    ...(Array.isArray(entry.finalMixStatuses) ? entry.finalMixStatuses : []),
+  ];
+  rows.forEach((row) => {
+    const status = row.premixSubmissionStatus ?? row.status;
+    if (!isApprovedUnitStatus(status)) return;
+    const premixNo = Number(row.premixNo);
+    if (Number.isFinite(premixNo) && premixNo > 0) ids.add(premixNo);
+  });
+  return ids;
+};
+
+const collectApprovedMotorIds = (entry: StageProgressEntry | null): Set<string> => {
+  const ids = new Set<string>();
+  if (!entry) return ids;
+  const rows = Array.isArray(entry.motorStatuses) ? entry.motorStatuses : [];
+  rows.forEach((row) => {
+    const status = row.motorSubmissionStatus ?? row.status;
+    if (!isApprovedUnitStatus(status)) return;
+    const motorId = String(row.motorId ?? "").trim();
+    if (motorId) ids.add(motorId);
+  });
+  return ids;
+};
+
+const normalizeStageNameKey = (value: unknown) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const isCompletelyApprovedStageStatus = (status: unknown): boolean => {
+  const upper = String(status ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+  if (upper === "COMPLETELY_APPROVED") return true;
+  return normalizeSubdepartmentBatchStatus(status) === OPERATION_STATUS.COMPLETELY_APPROVED;
+};
+
+const findSubscaleStageEntry = (stages: StageProgressEntry[]): StageProgressEntry | null => {
+  const byId = stages.find((stage) => Number(stage.subDepartmentId) === 8);
+  if (byId) return byId;
+  return (
+    stages.find((stage) => normalizeStageNameKey(stage.subDepartmentName) === "subscale") ?? null
+  );
+};
+
+const DEFAULT_STF_SUBSCALE_BLOCKED_MESSAGE =
+  "Wait until Subscale is completely approved before starting Static Test.";
+
+const DEFAULT_STF_NDT_BLOCKED_MESSAGE =
+  "Wait until NDT approves the motor before starting Static Test.";
+
+const findNdtStageEntry = (stages: StageProgressEntry[]): StageProgressEntry | null => {
+  const byId = stages.find((stage) => Number(stage.subDepartmentId) === 10);
+  if (byId) return byId;
+  return (
+    stages.find((stage) => {
+      const name = normalizeStageNameKey(stage.subDepartmentName);
+      return name === "ndt" || name === "nondestructivetesting";
+    }) ?? null
+  );
+};
+
+/**
+ * STF gate (no QC):
+ * - Always require Subscale COMPLETELY_APPROVED.
+ * - MAIN: motors approved in manufacturing NDT.
+ * - SUBSCALE (Qualification / Experimental): subscale alone unlocks (BEM / ID-sheet mains).
+ */
+const resolveStfPreviousStageApprovedUnits = (
+  stages: StageProgressEntry[],
+  _fallback: PreviousStageApprovedUnits,
+  options?: {
+    batchType?: string | null;
+    parallelFlowEnabled?: boolean | null;
+  },
+): PreviousStageApprovedUnits => {
+  void options?.parallelFlowEnabled;
+  const subscaleStage = findSubscaleStageEntry(stages);
+  if (!subscaleStage || !isCompletelyApprovedStageStatus(subscaleStage.status)) {
+    return {
+      enableAll: false,
+      kind: "motor",
+      previousSubDepartmentId: Number(subscaleStage?.subDepartmentId ?? 0) || null,
+      previousSubDepartmentName:
+        String(subscaleStage?.subDepartmentName ?? "").trim() || "Subscale",
+      approvedPremixNos: new Set(),
+      approvedMotorIds: new Set(),
+      blockedMessage: DEFAULT_STF_SUBSCALE_BLOCKED_MESSAGE,
+    };
+  }
+
+  const batchType = String(options?.batchType ?? "")
+    .trim()
+    .toUpperCase();
+
+  // Subscale Qualification / Experimental — no NDT / QC gate after subscale approval.
+  if (batchType === "SUBSCALE") {
+    return {
+      enableAll: true,
+      kind: "motor",
+      previousSubDepartmentId: Number(subscaleStage.subDepartmentId ?? 0) || null,
+      previousSubDepartmentName: String(subscaleStage.subDepartmentName ?? "").trim() || "Subscale",
+      approvedPremixNos: new Set(),
+      approvedMotorIds: new Set(),
+    };
+  }
+
+  const ndtStage = findNdtStageEntry(stages);
+  if (!ndtStage) {
+    return {
+      enableAll: false,
+      kind: "motor",
+      previousSubDepartmentId: null,
+      previousSubDepartmentName: "NDT",
+      approvedPremixNos: new Set(),
+      approvedMotorIds: new Set(),
+      blockedMessage: DEFAULT_STF_NDT_BLOCKED_MESSAGE,
+    };
+  }
+
+  const approvedMotorIds = collectApprovedMotorIds(ndtStage);
+  if (approvedMotorIds.size === 0) {
+    return {
+      enableAll: false,
+      kind: "motor",
+      previousSubDepartmentId: Number(ndtStage.subDepartmentId ?? 0) || null,
+      previousSubDepartmentName: String(ndtStage.subDepartmentName ?? "").trim() || "NDT",
+      approvedPremixNos: new Set(),
+      approvedMotorIds,
+      blockedMessage: DEFAULT_STF_NDT_BLOCKED_MESSAGE,
+    };
+  }
+
+  return {
+    enableAll: false,
+    kind: "motor",
+    previousSubDepartmentId: Number(ndtStage.subDepartmentId ?? 0) || null,
+    previousSubDepartmentName: String(ndtStage.subDepartmentName ?? "").trim() || "NDT",
+    approvedPremixNos: new Set(),
+    approvedMotorIds,
+  };
+};
+
+/** NDT unlocks only when the motor is approved in both Post Cure and Trimming. */
+const resolveNdtPreviousStageApprovedUnits = (
+  stages: StageProgressEntry[],
+  subDepartments: SubDeptRef[] | undefined | null,
+): PreviousStageApprovedUnits => {
+  const postCure = findPredecessorStageEntry(
+    stages,
+    resolveSubDepartmentIdsForSlugs(["post-cure-operations"], subDepartments),
+    ["post-cure-operations"],
+  );
+  const trimming = findPredecessorStageEntry(
+    stages,
+    resolveSubDepartmentIdsForSlugs(["trimming"], subDepartments),
+    ["trimming"],
+  );
+
+  if (!postCure || !trimming) {
+    return emptyResult("motor", false);
+  }
+
+  const postCureApproved = collectApprovedMotorIds(postCure);
+  const trimmingApproved = collectApprovedMotorIds(trimming);
+  const approvedMotorIds = new Set<string>();
+  postCureApproved.forEach((motorId) => {
+    if (trimmingApproved.has(motorId)) approvedMotorIds.add(motorId);
+  });
+
+  return {
+    enableAll: false,
+    kind: "motor",
+    previousSubDepartmentId:
+      Number(trimming.subDepartmentId ?? postCure.subDepartmentId ?? 0) || null,
+    previousSubDepartmentName: "Post Cure and Trimming",
+    approvedPremixNos: new Set(),
+    approvedMotorIds,
+  };
+};
+
+const resolveSubDepartmentIdsForSlugs = (
+  slugs: string[],
+  subDepartments: SubDeptRef[] | undefined | null,
+): number[] => {
+  const wanted = new Set(slugs.map(normalizeSlug).filter(Boolean));
+  if (!wanted.size || !Array.isArray(subDepartments)) return [];
+  return subDepartments
+    .filter((sd) => wanted.has(normalizeSlug(sd.slugs?.subDept)))
+    .map((sd) => Number(sd.subDepartmentId ?? 0))
+    .filter((id) => id > 0);
+};
+
+const findPredecessorStageEntry = (
+  stageProgress: StageProgressEntry[],
+  predecessorIds: number[],
+  predecessorSlugs: string[],
+): StageProgressEntry | null => {
+  for (const id of predecessorIds) {
+    const match = findStageEntryForSubDepartment(stageProgress, id);
+    if (match) return match as StageProgressEntry;
+  }
+
+  // Fallback: match by subDepartmentName keywords from slug
+  const keywords = predecessorSlugs.map((slug) => slug.replace(/-/g, " ").toLowerCase());
+  const byName = stageProgress.find((entry) => {
+    const name = String(entry.subDepartmentName ?? "")
+      .trim()
+      .toLowerCase();
+    if (!name) return false;
+    return keywords.some(
+      (keyword) =>
+        name.includes(keyword) || keyword.split(" ").every((part) => part && name.includes(part)),
+    );
+  });
+  return byName ?? null;
+};
+
+/**
+ * Resolve which premixes/motors the current subdepartment may edit,
+ * based on approvals recorded on the previous stage in `stageProgress`.
+ *
+ * Starters (always enable all):
+ * - Premix: Raw Material Preparation
+ * - Motor: Case Preparation
+ */
+export const resolvePreviousStageApprovedUnits = (params: {
+  stageProgress?: unknown;
+  currentStage?: unknown;
+  currentSlug?: string | null;
+  currentSubDepartmentId?: number | null;
+  subDepartments?: SubDeptRef[] | null;
+  batchType?: string | null;
+  parallelFlowEnabled?: boolean | null;
+}): PreviousStageApprovedUnits => {
+  const slug = normalizeSlug(params.currentSlug);
+  const stages = mergeStageProgress(params.stageProgress, params.currentStage);
+
+  if (PREMIX_STARTER_SLUGS.has(slug)) {
+    return emptyResult("premix", true);
+  }
+  if (MOTOR_STARTER_SLUGS.has(slug)) {
+    return emptyResult("motor", true);
+  }
+
+  const config = PREDECESSOR_BY_SLUG[slug];
+  if (!config) {
+    // Unknown slug — do not gate (avoid locking unrelated screens)
+    return emptyResult(null, true);
+  }
+
+  if (slug === "static-test-facility") {
+    const qcGate = resolveStfPreviousStageApprovedUnits(stages, emptyResult("motor", false), {
+      batchType: params.batchType,
+      parallelFlowEnabled: params.parallelFlowEnabled,
+    });
+    if (qcGate.previousSubDepartmentId || qcGate.previousSubDepartmentName) {
+      return qcGate;
+    }
+  }
+
+  if (slug === "ndt") {
+    return resolveNdtPreviousStageApprovedUnits(stages, params.subDepartments);
+  }
+
+  const predecessorIds = resolveSubDepartmentIdsForSlugs(
+    config.predecessors,
+    params.subDepartments,
+  );
+  const predecessor = findPredecessorStageEntry(stages, predecessorIds, config.predecessors);
+
+  if (!predecessor) {
+    // No prior stage data yet — keep units disabled until approvals exist
+    return {
+      ...emptyResult(config.kind, false),
+    };
+  }
+
+  if (config.kind === "premix") {
+    return {
+      enableAll: false,
+      kind: "premix",
+      previousSubDepartmentId: Number(predecessor.subDepartmentId ?? 0) || null,
+      previousSubDepartmentName: String(predecessor.subDepartmentName ?? "").trim() || null,
+      approvedPremixNos: collectApprovedPremixNos(predecessor),
+      approvedMotorIds: new Set(),
+    };
+  }
+
+  return {
+    enableAll: false,
+    kind: "motor",
+    previousSubDepartmentId: Number(predecessor.subDepartmentId ?? 0) || null,
+    previousSubDepartmentName: String(predecessor.subDepartmentName ?? "").trim() || null,
+    approvedPremixNos: new Set(),
+    approvedMotorIds: collectApprovedMotorIds(predecessor),
+  };
+};
+
+export const isPremixEnabledByPreviousStage = (
+  premixNo: number | string | null | undefined,
+  gate: PreviousStageApprovedUnits | null | undefined,
+): boolean => {
+  if (!gate || gate.enableAll) return true;
+  if (gate.kind !== "premix") return true;
+  const no = Number(premixNo);
+  if (!Number.isFinite(no) || no <= 0) return false;
+  return gate.approvedPremixNos.has(no);
+};
+
+export const isMotorEnabledByPreviousStage = (
+  motorId: string | null | undefined,
+  gate: PreviousStageApprovedUnits | null | undefined,
+): boolean => {
+  if (!gate || gate.enableAll) return true;
+  if (gate.kind !== "motor") return true;
+  const id = String(motorId ?? "").trim();
+  if (!id) return false;
+  return gate.approvedMotorIds.has(id);
+};
+
+/** First motor id allowed by the previous-stage gate (falls back to first id). */
+export const pickFirstPreviousStageEnabledMotorId = (
+  motorIds: Array<string | null | undefined>,
+  gate: PreviousStageApprovedUnits | null | undefined,
+): string => {
+  const normalized = motorIds.map((id) => String(id ?? "").trim()).filter(Boolean);
+  const firstEnabled = normalized.find((id) => isMotorEnabledByPreviousStage(id, gate));
+  return firstEnabled ?? normalized[0] ?? "";
+};
+
+/** Approved within the current subdepartment — required before the next unit unlocks. */
+export const isSequentialUnitApproved = (status: unknown): boolean => isApprovedUnitStatus(status);
+
+export const arePriorSequentialUnitsApproved = (
+  unitIndex: number,
+  orderedUnitKeys: string[],
+  getStatus: (unitKey: string) => string | undefined | null,
+): boolean => {
+  if (unitIndex <= 0) return true;
+
+  for (let index = 0; index < unitIndex; index += 1) {
+    const unitKey = String(orderedUnitKeys[index] ?? "").trim();
+    if (!unitKey) return false;
+    if (!isSequentialUnitApproved(getStatus(unitKey))) return false;
+  }
+
+  return true;
+};
+
+export const arePriorMotorsApprovedInSequence = (
+  motorIndex: number,
+  orderedMotorIds: string[],
+  getStatus: (motorId: string) => string | undefined | null,
+): boolean => arePriorSequentialUnitsApproved(motorIndex, orderedMotorIds, getStatus);
+
+export const arePriorPremixesApprovedInSequence = (
+  premixIndex: number,
+  orderedPremixNos: Array<number | string>,
+  getStatus: (premixNo: number | string) => string | undefined | null,
+): boolean =>
+  arePriorSequentialUnitsApproved(
+    premixIndex,
+    orderedPremixNos.map((premixNo) => String(premixNo)),
+    (premixKey) => getStatus(premixKey),
+  );
+
+export const isMotorEnabledForWorkflow = (
+  motorId: string | null | undefined,
+  orderedMotorIds: string[],
+  gate: PreviousStageApprovedUnits | null | undefined,
+  _getStatus?: (motorId: string) => string | undefined | null,
+): boolean => {
+  const id = String(motorId ?? "").trim();
+  if (!id) return false;
+  if (!orderedMotorIds.some((entry) => String(entry ?? "").trim() === id)) return false;
+  // Case Prep (starter / enableAll) opens every motor. Later subdepts only check
+  // the previous subdepartment's status for this motor — not sibling-motor sequence.
+  return isMotorEnabledByPreviousStage(id, gate);
+};
+
+export const getMotorNavTabDisabledReason = (
+  motorId: string | undefined,
+  _motorIndex: number,
+  _orderedMotorIds: string[],
+  gate: PreviousStageApprovedUnits | null | undefined,
+  _getStatus?: (motorId: string) => string | undefined | null,
+  messages: {
+    previousStage?: string;
+    sequential?: string;
+  } = {},
+): string | undefined => {
+  const id = String(motorId ?? "").trim();
+  if (!id) return undefined;
+
+  if (!isMotorEnabledByPreviousStage(id, gate)) {
+    return gate?.blockedMessage ?? messages.previousStage;
+  }
+
+  return undefined;
+};
+
+export const isPremixEnabledForWorkflow = (
+  premixNo: number | string | null | undefined,
+  orderedPremixNos: Array<number | string>,
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus: (premixNo: number | string) => string | undefined | null,
+): boolean => {
+  const no = Number(premixNo);
+  if (!Number.isFinite(no) || no <= 0) return false;
+  if (!isPremixEnabledByPreviousStage(no, gate)) return false;
+
+  const premixIndex = orderedPremixNos.findIndex((entry) => Number(entry) === no);
+  if (premixIndex < 0) return false;
+
+  return arePriorPremixesApprovedInSequence(premixIndex, orderedPremixNos, getStatus);
+};
+
+export const getPremixNavTabDisabledReason = (
+  premixNo: number | string | undefined,
+  premixIndex: number,
+  orderedPremixNos: Array<number | string>,
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus: (premixNo: number | string) => string | undefined | null,
+  messages: {
+    previousStage?: string;
+    sequential?: string;
+  } = {},
+): string | undefined => {
+  const no = Number(premixNo);
+  if (!Number.isFinite(no) || no <= 0) return undefined;
+
+  if (!isPremixEnabledByPreviousStage(no, gate)) {
+    return messages.previousStage;
+  }
+
+  if (!arePriorPremixesApprovedInSequence(premixIndex, orderedPremixNos, getStatus)) {
+    return messages.sequential;
+  }
+
+  return undefined;
+};
+
+export const buildMotorNavGateHelpers = (
+  motorCards: Array<{ motorId?: string | null }>,
+  previousStageGate: PreviousStageApprovedUnits | null | undefined,
+  resolveMotorStatus: (motorId: string) => string | undefined | null,
+  messages: {
+    previousStage?: string;
+    notYetUnlocked?: string;
+    sequential?: string;
+  } = {},
+  batchContext?: BatchStageContext | null,
+  subDepartmentId?: number | null,
+) => {
+  const orderedMotorIds = motorCards
+    .map((motor) => String(motor.motorId ?? "").trim())
+    .filter(Boolean);
+
+  const legacyMotorEnabled = (motorId: string | null | undefined) =>
+    isMotorEnabledForWorkflow(motorId, orderedMotorIds, previousStageGate, resolveMotorStatus);
+
+  const parallelMotorEnabled = (motorId: string | null | undefined) => {
+    const id = String(motorId ?? "").trim();
+    if (!id || subDepartmentId == null || !batchContext) return legacyMotorEnabled(motorId);
+    const unit = findMotorUnit(getActiveStage(batchContext, subDepartmentId), id);
+    return !isMotorDisabled(unit);
+  };
+
+  const isMotorWorkflowEnabledForBatch = (motorId: string | null | undefined) => {
+    if (isMotorWorkflowTabDisabled(resolveMotorStatus(String(motorId ?? "").trim()))) {
+      return false;
+    }
+    return batchContext && usesParallelUnitLocks(batchContext)
+      ? parallelMotorEnabled(motorId)
+      : legacyMotorEnabled(motorId);
+  };
+
+  const getMotorTabTooltipForBatch = (index: number) => {
+    const motorId = motorCards[index]?.motorId;
+    if (isMotorWorkflowTabDisabled(resolveMotorStatus(String(motorId ?? "").trim()))) {
+      return "Motor discarded";
+    }
+    if (batchContext && usesParallelUnitLocks(batchContext) && subDepartmentId != null) {
+      const unit = findMotorUnit(
+        getActiveStage(batchContext, subDepartmentId),
+        String(motorId ?? ""),
+      );
+      if (isMotorDisabled(unit)) {
+        return (
+          previousStageGate?.blockedMessage ?? messages.notYetUnlocked ?? messages.previousStage
+        );
+      }
+      return undefined;
+    }
+    return getMotorNavTabDisabledReason(
+      motorId,
+      index,
+      orderedMotorIds,
+      previousStageGate,
+      resolveMotorStatus,
+      messages,
+    );
+  };
+
+  return {
+    orderedMotorIds,
+    isMotorTabEnabled: (index: number) =>
+      isMotorWorkflowEnabledForBatch(motorCards[index]?.motorId),
+    getMotorTabTooltip: getMotorTabTooltipForBatch,
+    isMotorWorkflowEnabled: (motorId: string | null | undefined) =>
+      isMotorWorkflowEnabledForBatch(motorId),
+  };
+};
+
+export const isMotorEnabledForWorkflowWithBatch = (
+  batchContext: BatchStageContext | null | undefined,
+  subDepartmentId: number | null | undefined,
+  motorId: string | null | undefined,
+  orderedMotorIds: string[],
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus?: (motorId: string) => string | undefined | null,
+): boolean => {
+  if (batchContext && usesParallelUnitLocks(batchContext) && subDepartmentId != null) {
+    const unit = findMotorUnit(
+      getActiveStage(batchContext, subDepartmentId),
+      String(motorId ?? ""),
+    );
+    return !isMotorDisabled(unit);
+  }
+  return isMotorEnabledForWorkflow(motorId, orderedMotorIds, gate, getStatus);
+};
+
+export const isPremixEnabledForWorkflowWithBatch = (
+  batchContext: BatchStageContext | null | undefined,
+  subDepartmentId: number | null | undefined,
+  premixNo: number | string | null | undefined,
+  orderedPremixNos: Array<number | string>,
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus: (premixNo: number | string) => string | undefined | null,
+  stageType: "PREMIX" | "FINAL_MIX" = "PREMIX",
+): boolean => {
+  if (batchContext && usesParallelUnitLocks(batchContext) && subDepartmentId != null) {
+    const unit = findPremixUnit(
+      getActiveStage(batchContext, subDepartmentId),
+      premixNo ?? "",
+      stageType,
+    );
+    return !isPremixDisabled(unit);
+  }
+  return isPremixEnabledForWorkflow(premixNo, orderedPremixNos, gate, getStatus);
+};
+
+export const getPremixNavTabDisabledReasonWithBatch = (
+  batchContext: BatchStageContext | null | undefined,
+  subDepartmentId: number | null | undefined,
+  premixNo: number | string | undefined,
+  premixIndex: number,
+  orderedPremixNos: Array<number | string>,
+  gate: PreviousStageApprovedUnits | null | undefined,
+  getStatus: (premixNo: number | string) => string | undefined | null,
+  messages: {
+    previousStage?: string;
+    notYetUnlocked?: string;
+    sequential?: string;
+  } = {},
+  stageType: "PREMIX" | "FINAL_MIX" = "PREMIX",
+): string | undefined => {
+  if (batchContext && usesParallelUnitLocks(batchContext) && subDepartmentId != null) {
+    const unit = findPremixUnit(
+      getActiveStage(batchContext, subDepartmentId),
+      premixNo ?? "",
+      stageType,
+    );
+    if (isPremixDisabled(unit)) {
+      return messages.notYetUnlocked ?? messages.previousStage;
+    }
+    return undefined;
+  }
+  return getPremixNavTabDisabledReason(
+    premixNo,
+    premixIndex,
+    orderedPremixNos,
+    gate,
+    getStatus,
+    messages,
+  );
+};
+
+export const resolveBatchStageContext = (
+  batch: Record<string, unknown> | null | undefined,
+): BatchStageContext => ({
+  parallelFlowEnabled:
+    batch?.parallelFlowEnabled === true
+      ? true
+      : batch?.parallelFlowEnabled === false
+        ? false
+        : null,
+  currentStage: Array.isArray(batch?.currentStage)
+    ? (batch?.currentStage as BatchView["currentStage"])
+    : undefined,
+  stageProgress: Array.isArray(batch?.stageProgress)
+    ? (batch?.stageProgress as BatchView["stageProgress"])
+    : undefined,
+});
+
+const asStageArraySource = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/** Pick stage arrays from a batch / batch-details object (nested `data.batch` included). */
+export const getBatchStageProgressArrays = (
+  batch: Record<string, unknown> | null | undefined,
+): { stageProgress: unknown; currentStage: unknown } => {
+  if (!batch) return { stageProgress: null, currentStage: null };
+
+  const candidates: Record<string, unknown>[] = [batch];
+  const data = asStageArraySource(batch.data);
+  if (data) {
+    candidates.push(data);
+    const nestedBatch = asStageArraySource(data.batch);
+    if (nestedBatch) candidates.push(nestedBatch);
+  }
+  const rootBatch = asStageArraySource(batch.batch);
+  if (rootBatch) candidates.push(rootBatch);
+
+  for (const source of candidates) {
+    if (Array.isArray(source.stageProgress) || Array.isArray(source.currentStage)) {
+      return {
+        stageProgress: Array.isArray(source.stageProgress) ? source.stageProgress : null,
+        currentStage: Array.isArray(source.currentStage) ? source.currentStage : null,
+      };
+    }
+  }
+
+  return {
+    stageProgress: batch.stageProgress ?? null,
+    currentStage: batch.currentStage ?? null,
+  };
+};

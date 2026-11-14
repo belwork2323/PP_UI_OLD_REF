@@ -1,0 +1,482 @@
+import { get, post } from "../httpClient";
+import { SYSTEM } from "../endPoints";
+import { AppError } from "../../../utils/AppError";
+import { STRINGS } from "../../../app/config/strings";
+
+const publicGet = (url, params = {}) => get(url, params, { skipAuth: true });
+
+/**
+ * HTTP 200 envelope: `{ success: false, statusCode, message, error, data }`
+ */
+const assertSuccessEnvelope = (body) => {
+  if (body != null && typeof body === "object" && body.success === false) {
+    const status = typeof body.statusCode === "number" ? body.statusCode : 500;
+    const message =
+      typeof body.message === "string" && body.message.trim()
+        ? body.message
+        : STRINGS.SYSTEM.UNEXPECTED_ERROR;
+    throw new AppError({
+      status,
+      message,
+      details: body.error ?? null,
+    });
+  }
+};
+
+/**
+ * Backend returns `{ success, code, message, data: T | T[] }` or a raw array.
+ */
+const unwrapData = (body) => {
+  if (body == null) return null;
+  if (Array.isArray(body)) return body;
+  if (typeof body === "object" && body.data !== undefined) return body.data;
+  return body;
+};
+
+const asList = (body) => {
+  const raw = unwrapData(body);
+  return Array.isArray(raw) ? raw : [];
+};
+
+/** Re-throw AppError; normalize unexpected failures so callers always see AppError. */
+const wrapLookupError = (error, fallbackMessage = STRINGS.SYSTEM.UNEXPECTED_ERROR) => {
+  if (error instanceof AppError) throw error;
+  const message =
+    error && typeof error.message === "string" && error.message.trim()
+      ? error.message
+      : fallbackMessage;
+  throw new AppError({ status: 0, message, details: error });
+};
+
+/* ─────────────────────────────────────────
+   System lookup — GET api/v1/system/*
+   No auth. Shapes match backend (see Swagger / API docs).
+───────────────────────────────────────── */
+
+/**
+ * @returns {Promise<Array<{ roleId: number, roleName: string }>>}
+ */
+export const fetchRoles = async () => {
+  try {
+    const body = await publicGet(SYSTEM.ROLES);
+    assertSuccessEnvelope(body);
+    return asList(body).map((r) => ({
+      roleId: r.roleId ?? r.id,
+      roleName: r.roleName ?? r.name,
+    }));
+  } catch (error) {
+    wrapLookupError(error);
+  }
+};
+
+/**
+ * @returns {Promise<Array<{ departmentId: number, departmentName: string, subDepartments?: Array<{ subDepartmentId: number, subDepartmentName: string }> }>>}
+ */
+export const fetchDepartments = async () => {
+  try {
+    const body = await publicGet(SYSTEM.DEPARTMENTS);
+    assertSuccessEnvelope(body);
+    return asList(body).map((d) => ({
+      departmentId: d.departmentId ?? d.id,
+      departmentName: d.departmentName ?? d.name,
+      subDepartments: Array.isArray(d.subDepartments)
+        ? d.subDepartments.map((sd) => ({
+            subDepartmentId: sd.subDepartmentId ?? sd.id,
+            subDepartmentName: sd.subDepartmentName ?? sd.name,
+            departmentId: sd.departmentId ?? sd.department_id ?? d.departmentId ?? d.id,
+          }))
+        : [],
+    }));
+  } catch (error) {
+    wrapLookupError(error);
+  }
+};
+
+/**
+ * @param {number|null|undefined} departmentId — optional server-side filter (?departmentId=)
+ * @returns {Promise<Array<{ subDepartmentId: number, subDepartmentName: string, departmentId: number }>>}
+ */
+export const fetchSubDepartments = async (departmentId = null) => {
+  try {
+    const body = await publicGet(SYSTEM.SUB_DEPARTMENTS);
+    assertSuccessEnvelope(body);
+    let list = asList(body).map((s) => ({
+      subDepartmentId: s.subDepartmentId ?? s.id,
+      subDepartmentName: s.subDepartmentName ?? s.name,
+      departmentId: s.departmentId ?? s.department_id,
+    }));
+    if (departmentId != null && departmentId !== "") {
+      list = list.filter((s) => Number(s.departmentId) === Number(departmentId));
+    }
+    return list;
+  } catch (error) {
+    wrapLookupError(error);
+  }
+};
+
+export type SystemMasterOption = {
+  id: number;
+  code: string;
+  name: string;
+};
+
+const mapSystemMasterOption = (row: Record<string, unknown>): SystemMasterOption => ({
+  id: Number(row.id ?? 0),
+  code: String(row.code ?? row.name ?? "").trim(),
+  name: String(row.name ?? row.code ?? "").trim(),
+});
+
+/**
+ * Mixer master — GET api/v1/system/mixers (authenticated)
+ * @returns {Promise<SystemMasterOption[]>}
+ */
+export const fetchMixers = async (): Promise<SystemMasterOption[]> => {
+  try {
+    const body = await get(SYSTEM.MIXERS);
+    assertSuccessEnvelope(body);
+    return asList(body)
+      .map(mapSystemMasterOption)
+      .filter((item) => item.code);
+  } catch (error) {
+    wrapLookupError(error);
+    return [];
+  }
+};
+
+/**
+ * Building master — GET api/v1/system/buildings (authenticated)
+ * @returns {Promise<SystemMasterOption[]>}
+ */
+export const fetchBuildings = async (): Promise<SystemMasterOption[]> => {
+  try {
+    const body = await get(SYSTEM.BUILDINGS);
+    assertSuccessEnvelope(body);
+    return asList(body)
+      .map(mapSystemMasterOption)
+      .filter((item) => item.code);
+  } catch (error) {
+    wrapLookupError(error);
+    return [];
+  }
+};
+
+export type OvenMasterOption = SystemMasterOption & {
+  noOfOvenAvailable?: number;
+};
+
+const mapOvenMasterOption = (row: Record<string, unknown>): OvenMasterOption => {
+  const availableRaw = row.noOfOvenAvailable ?? row.noOfOvenAdded;
+  return {
+    ...mapSystemMasterOption(row),
+    noOfOvenAvailable:
+      availableRaw != null && availableRaw !== "" ? Number(availableRaw) : undefined,
+  };
+};
+
+/**
+ * Oven master — GET api/v1/system/ovens (authenticated)
+ * Dedupes concurrent / StrictMode remount calls onto a single in-flight request.
+ * @returns {Promise<OvenMasterOption[]>}
+ */
+let ovensRequestPromise: Promise<OvenMasterOption[]> | null = null;
+
+export const fetchOvens = async (): Promise<OvenMasterOption[]> => {
+  if (ovensRequestPromise) return ovensRequestPromise;
+
+  ovensRequestPromise = (async () => {
+    try {
+      const body = await get(SYSTEM.OVENS);
+      assertSuccessEnvelope(body);
+      return asList(body)
+        .map(mapOvenMasterOption)
+        .filter((item) => item.code);
+    } catch (error) {
+      ovensRequestPromise = null;
+      wrapLookupError(error);
+      return [];
+    }
+  })();
+
+  return ovensRequestPromise;
+};
+
+export type EquipmentTypeMasterOption = {
+  id: number;
+  code: string;
+  name: string;
+  typeCode: string;
+  description: string;
+};
+
+/** Resolve equipment type code from list row (top-level or nested attributes). */
+export const resolveEquipmentTypeCode = (row: Record<string, unknown>): string => {
+  const attrs =
+    row.attributes && typeof row.attributes === "object"
+      ? (row.attributes as Record<string, unknown>)
+      : {};
+  return String(row.typeCode ?? attrs.typeCode ?? row.code ?? "").trim();
+};
+
+const mapEquipmentTypeMasterOption = (row: Record<string, unknown>): EquipmentTypeMasterOption => {
+  const attrs =
+    row.attributes && typeof row.attributes === "object"
+      ? (row.attributes as Record<string, unknown>)
+      : {};
+  const typeCode = resolveEquipmentTypeCode(row);
+  return {
+    id: Number(row.id ?? 0),
+    code: String(row.code ?? "").trim(),
+    name: String(row.name ?? "").trim(),
+    typeCode,
+    description: String(row.description ?? attrs.description ?? row.description ?? "").trim(),
+  };
+};
+
+let equipmentTypeListRequestPromise: Promise<EquipmentTypeMasterOption[]> | null = null;
+
+export const fetchEquipmentTypeList = async (): Promise<EquipmentTypeMasterOption[]> => {
+  if (equipmentTypeListRequestPromise) return equipmentTypeListRequestPromise;
+
+  equipmentTypeListRequestPromise = (async () => {
+    try {
+      const body = await get(SYSTEM.EQUIPMENT_TYPE_LIST);
+      assertSuccessEnvelope(body);
+      return asList(body)
+        .map(mapEquipmentTypeMasterOption)
+        .filter((item) => Boolean(item.typeCode));
+    } catch (error) {
+      equipmentTypeListRequestPromise = null;
+      wrapLookupError(error);
+      return [];
+    }
+  })();
+
+  return equipmentTypeListRequestPromise;
+};
+
+export type EquipmentMasterOption = {
+  equipmentId: number;
+  equipmentCode: string;
+  equipmentName: string;
+  equipmentType: string;
+};
+
+const mapEquipmentMasterOption = (row: Record<string, unknown>): EquipmentMasterOption => ({
+  equipmentId: Number(row.equipmentId ?? row.id ?? 0),
+  equipmentCode: String(row.equipmentCode ?? row.code ?? "").trim(),
+  equipmentName: String(row.equipmentName ?? row.name ?? "").trim(),
+  equipmentType: String(row.equipmentType ?? "").trim(),
+});
+
+/**
+ * Equipment master — GET api/v1/system/equipment-list (authenticated)
+ * Used by NDT radiography setup equipment dropdown.
+ */
+let equipmentListRequestPromise: Promise<EquipmentMasterOption[]> | null = null;
+
+export const fetchEquipmentList = async (): Promise<EquipmentMasterOption[]> => {
+  if (equipmentListRequestPromise) return equipmentListRequestPromise;
+
+  equipmentListRequestPromise = (async () => {
+    try {
+      const body = await get(SYSTEM.EQUIPMENT_LIST);
+      assertSuccessEnvelope(body);
+      return asList(body)
+        .map(mapEquipmentMasterOption)
+        .filter((item) => Boolean(item.equipmentCode || item.equipmentName));
+    } catch (error) {
+      equipmentListRequestPromise = null;
+      wrapLookupError(error);
+      return [];
+    }
+  })();
+
+  return equipmentListRequestPromise;
+};
+
+export type BeamEnergyMasterOption = {
+  beamEnergyId: number;
+  beamEnergyCode: string;
+  beamEnergyName: string;
+  energyUnit: string;
+};
+
+const mapBeamEnergyMasterOption = (row: Record<string, unknown>): BeamEnergyMasterOption => ({
+  beamEnergyId: Number(row.beamEnergyId ?? row.id ?? 0),
+  beamEnergyCode: String(row.beamEnergyCode ?? row.code ?? "").trim(),
+  beamEnergyName: String(row.beamEnergyName ?? row.name ?? "").trim(),
+  energyUnit: String(row.energyUnit ?? "").trim(),
+});
+
+/**
+ * Beam energy master — GET api/v1/system/energy-beam-list (authenticated)
+ * Used by NDT radiography setup beam energy dropdown.
+ */
+let beamEnergyListRequestPromise: Promise<BeamEnergyMasterOption[]> | null = null;
+
+export const fetchBeamEnergyList = async (): Promise<BeamEnergyMasterOption[]> => {
+  if (beamEnergyListRequestPromise) return beamEnergyListRequestPromise;
+
+  beamEnergyListRequestPromise = (async () => {
+    try {
+      const body = await get(SYSTEM.ENERGY_BEAM_LIST);
+      assertSuccessEnvelope(body);
+      return asList(body)
+        .map(mapBeamEnergyMasterOption)
+        .filter((item) => Boolean(item.beamEnergyCode || item.beamEnergyName));
+    } catch (error) {
+      beamEnergyListRequestPromise = null;
+      wrapLookupError(error);
+      return [];
+    }
+  })();
+
+  return beamEnergyListRequestPromise;
+};
+
+export type UnitMasterOption = {
+  id: number;
+  code: string;
+  name: string;
+  unitCode: string;
+  symbol: string;
+  description: string;
+};
+
+/** @deprecated Use UnitMasterOption */
+export type EnergyUnitMasterOption = UnitMasterOption;
+
+const mapUnitMasterOption = (row: Record<string, unknown>): UnitMasterOption => ({
+  id: Number(row.id ?? 0),
+  code: String(row.code ?? "").trim(),
+  name: String(row.name ?? "").trim(),
+  unitCode: String(row.unitCode ?? "").trim(),
+  symbol: String(row.symbol ?? "").trim(),
+  description: String(row.description ?? "").trim(),
+});
+
+let unitListRequestPromise: Promise<UnitMasterOption[]> | null = null;
+
+/**
+ * Unit master — GET api/v1/system/unit-list (authenticated)
+ */
+export const fetchUnitList = async (): Promise<UnitMasterOption[]> => {
+  if (unitListRequestPromise) return unitListRequestPromise;
+
+  unitListRequestPromise = (async () => {
+    try {
+      const body = await get(SYSTEM.UNIT_LIST);
+      assertSuccessEnvelope(body);
+      return asList(body)
+        .map(mapUnitMasterOption)
+        .filter((item) => Boolean(item.code || item.name || item.unitCode));
+    } catch (error) {
+      unitListRequestPromise = null;
+      wrapLookupError(error);
+      return [];
+    }
+  })();
+
+  return unitListRequestPromise;
+};
+
+/** @deprecated Use fetchUnitList — all units are returned from a single master list. */
+export const fetchEnergyUnitList = async (): Promise<UnitMasterOption[]> => fetchUnitList();
+
+/** motorStage filter for mixing cycle master — always sent as string ("0" | "1" | "2" | "3" | "ALL") */
+export type MixingCycleMotorStage = 0 | 1 | 2 | 3 | "ALL" | number | string;
+
+export type MixingCycleMasterItem = {
+  mixingCycleId: number;
+  mixingCycleCode: string;
+  mixingCycleName: string;
+  motorStage: number;
+  projectId: string;
+};
+
+/** Normalize to string for this API only — e.g. 0 → "0", 1 → "1", ALL → "ALL" */
+const normalizeMixingCycleMotorStage = (
+  motorStage: MixingCycleMotorStage | null | undefined,
+): string => {
+  if (motorStage === null || motorStage === undefined || motorStage === "") return "ALL";
+  const raw = String(motorStage).trim();
+  if (!raw || raw.toUpperCase() === "ALL") return "ALL";
+  const asNumber = Number(raw);
+  if (Number.isFinite(asNumber)) return String(asNumber);
+  return "ALL";
+};
+
+const mapMixingCycleMasterItem = (row: Record<string, unknown>): MixingCycleMasterItem => ({
+  mixingCycleId: Number(row.mixingCycleId ?? row.id ?? 0),
+  mixingCycleCode: String(row.mixingCycleCode ?? row.code ?? "").trim(),
+  mixingCycleName: String(row.mixingCycleName ?? row.name ?? "").trim(),
+  motorStage: Number(row.motorStage ?? 0),
+  projectId: String(row.projectId ?? "").trim(),
+});
+
+/**
+ * Mixing cycle master — POST api/v1/system/mixing-cycle-list (authenticated)
+ * Request body: `{ motorStage: "0" | "1" | "2" | "3" | "ALL" }` (always string)
+ */
+export const fetchMixingCycles = async (): Promise<MixingCycleMasterItem[]> => {
+  try {
+    const body = await get(SYSTEM.MIXING_CYCLE_LIST);
+    assertSuccessEnvelope(body);
+    return asList(body)
+      .map(mapMixingCycleMasterItem)
+      .filter((item) => item.mixingCycleId > 0 || Boolean(item.mixingCycleCode));
+  } catch (error) {
+    wrapLookupError(error);
+    return [];
+  }
+};
+
+export type SubscaleArticleOption = {
+  subscaleArticleId: number;
+  subscaleArticleCode: string;
+  subscaleArticleName: string;
+  isActive: boolean;
+  isBem: boolean;
+  bemSize?: number | null;
+  bemUnit?: string | null;
+};
+
+export type FetchSubscaleArticlesParams = {
+  subBatchType?: string;
+};
+
+const mapSubscaleArticleOption = (row: Record<string, unknown>): SubscaleArticleOption => ({
+  subscaleArticleId: Number(row.subscaleArticleId ?? row.id ?? 0),
+  subscaleArticleCode: String(row.subscaleArticleCode ?? row.code ?? "").trim(),
+  subscaleArticleName: String(row.subscaleArticleName ?? row.name ?? "").trim(),
+  isActive: row.isActive !== false,
+  isBem: row.isBem === true,
+  bemSize: row.bemSize == null || row.bemSize === "" ? null : Number(row.bemSize),
+  bemUnit: row.bemUnit == null || row.bemUnit === "" ? null : String(row.bemUnit).trim(),
+});
+
+/**
+ * Subscale article master — GET api/v1/system/subscale-articles (authenticated)
+ * Used for Experimental subscale batch multi-select.
+ */
+export const fetchSubscaleArticles = async (
+  params: FetchSubscaleArticlesParams = {},
+): Promise<SubscaleArticleOption[]> => {
+  try {
+    const query: Record<string, string> = {};
+    if (params.subBatchType) query.subBatchType = params.subBatchType;
+
+    const body = await get(SYSTEM.SUBSCALE_ARTICLES, query);
+    assertSuccessEnvelope(body);
+    return asList(body)
+      .map(mapSubscaleArticleOption)
+      .filter((item) => Boolean(item.subscaleArticleName));
+  } catch (error) {
+    wrapLookupError(error);
+    return [];
+  }
+};
+
+export const fetchMixingCycleDetailsApi = async (mixingCycleCode: string) => {
+  return await post(SYSTEM.MIXING_CYCLES, { mixingCycleCode });
+};

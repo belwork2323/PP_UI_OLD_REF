@@ -1,0 +1,250 @@
+export class DimensionalParameterModel {
+  paramId: string;
+  paramName: string;
+  referenceRange: {
+    minValue: number | null;
+    maxValue: number | null;
+    unit: string | null;
+  };
+
+  constructor(payload: any) {
+    this.paramId = payload?.paramId ?? "";
+    this.paramName = payload?.paramName ?? "";
+    this.referenceRange = {
+      minValue: payload?.referenceRange?.minValue ?? null,
+      maxValue: payload?.referenceRange?.maxValue ?? null,
+      unit: payload?.referenceRange?.unit ?? null,
+    };
+  }
+
+  get formattedRange(): string {
+    const { minValue, maxValue, unit } = this.referenceRange;
+    const unitSuffix = unit ? ` ${unit}` : "";
+
+    if (minValue != null && maxValue != null) return `${minValue} - ${maxValue}${unitSuffix}`;
+    if (minValue != null) return `>= ${minValue}${unitSuffix}`;
+    if (maxValue != null) return `<= ${maxValue}${unitSuffix}`;
+    return "N/A";
+  }
+}
+
+export class DimensionalParametersListModel {
+  motorType: string;
+  parameters: DimensionalParameterModel[];
+
+  constructor(payload: any) {
+    this.motorType = payload?.motorType ?? "";
+    this.parameters = Array.isArray(payload?.parameters)
+      ? payload.parameters.map((item: any) => new DimensionalParameterModel(item))
+      : [];
+  }
+
+  static fromApi(apiResponse: any): DimensionalParametersListModel {
+    return new DimensionalParametersListModel(apiResponse?.data ?? {});
+  }
+}
+
+export class SolidProcessItemModel {
+  processId: string;
+  processKey: string;
+  label: string;
+  description: string;
+
+  constructor(payload: any) {
+    this.processId = payload?.processId ?? "";
+    this.processKey = payload?.processKey ?? "";
+    this.label = payload?.label ?? "";
+    this.description = payload?.description ?? "";
+  }
+}
+
+export class SolidProcessesListModel {
+  processes: SolidProcessItemModel[];
+
+  constructor(payload: any) {
+    this.processes = Array.isArray(payload?.processes)
+      ? payload.processes.map((item: any) => new SolidProcessItemModel(item))
+      : [];
+  }
+
+  static fromApi(apiResponse: any): SolidProcessesListModel {
+    return new SolidProcessesListModel(apiResponse?.data ?? {});
+  }
+}
+
+export class MotorStageListItemModel {
+  motorStage: string;
+  noOfmotors: number;
+  /** Derived from list order when API does not return an explicit id */
+  motorTypeId: number;
+
+  constructor(payload: any, index: number) {
+    this.motorStage = String(payload?.motorStage ?? "").trim();
+    this.noOfmotors = Number(payload?.noOfmotors ?? payload?.noOfMotors ?? 0);
+    this.motorTypeId = index + 1;
+  }
+}
+
+export class MotorsStageListModel {
+  stages: MotorStageListItemModel[];
+
+  constructor(stages: MotorStageListItemModel[] = []) {
+    this.stages = stages;
+  }
+
+  static fromApi(apiResponse: any): MotorsStageListModel {
+    const envelope = apiResponse?.data;
+    let raw: unknown[] = [];
+
+    if (Array.isArray(envelope)) {
+      raw = envelope;
+    } else if (envelope && typeof envelope === "object" && Array.isArray((envelope as { stages?: unknown[] }).stages)) {
+      raw = (envelope as { stages: unknown[] }).stages;
+    } else if (Array.isArray(apiResponse?.stages)) {
+      raw = apiResponse.stages;
+    }
+
+    return new MotorsStageListModel(
+      raw.map((item, index) => new MotorStageListItemModel(item, index)),
+    );
+  }
+}
+
+export type AvailableMotorOption = {
+
+  motorCasingId: string;
+  motorId: string;
+  motorStage: string;
+  motorNo: string;
+  projectId: string;
+  status: string;
+};
+
+export class AvailableMotorModel implements AvailableMotorOption {
+  motorId: string;
+  motorCasingId: string;
+  motorStage: string;
+  motorNo: string;
+  projectId: string;
+  status: string;
+
+  constructor(payload: Record<string, unknown>) {
+    this.motorId = String(payload?.motorId ?? "").trim();
+    this.motorCasingId = String(payload?.motorCasingId ?? "").trim();
+    this.motorId = String(payload?.motorId ?? payload?.motorNo ?? "").trim();
+    this.motorStage = String(payload?.motorStage ?? "").trim();
+    this.motorNo = String(payload?.motorNo ?? payload?.motorId ?? "").trim();
+    this.projectId = String(payload?.projectId ?? "").trim();
+    this.status = String(payload?.status ?? "").trim();
+  }
+}
+
+export class AvailableMotorsListModel {
+  motors: AvailableMotorModel[];
+
+  constructor(motors: AvailableMotorModel[] = []) {
+    this.motors = motors;
+  }
+
+  static fromApi(apiResponse: { data?: unknown }): AvailableMotorsListModel {
+    const data = apiResponse?.data;
+    let motors: unknown[] = [];
+    let projectId = "";
+    let motorStage = "";
+
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const obj = data as Record<string, unknown>;
+      motors = Array.isArray(obj.motors) ? obj.motors : [];
+      projectId = String(obj.projectId ?? "");
+      motorStage = String(obj.motorStage ?? "");
+    } else if (Array.isArray(data)) {
+      motors = data;
+    }
+
+    return new AvailableMotorsListModel(
+      motors
+        .map((item) => {
+          const row = item as Record<string, unknown>;
+          return new AvailableMotorModel({
+            ...row,
+            projectId: row.projectId ?? projectId,
+            motorStage: row.motorStage ?? motorStage,
+          });
+        })
+        .filter((m) => m.motorId || m.motorCasingId),
+    );
+  }
+}
+
+export type MaterialLotGrade = {
+  gradeId: string | number;
+  gradeCode: string;
+  gradeName: string;
+  specifications?: unknown[];
+};
+
+export type MaterialLotItem = {
+  materialCode: string;
+  materialName: string;
+  lotId: string;
+  make: string;
+  grade?: MaterialLotGrade | null;
+};
+
+export type MaterialLotsRequest = {
+  batchId: string;
+};
+
+export class MaterialLotItemModel implements MaterialLotItem {
+  materialCode: string;
+  materialName: string;
+  lotId: string;
+  make: string;
+  grade: MaterialLotGrade | null;
+
+  constructor(payload: Record<string, unknown>) {
+    this.materialCode = String(payload?.materialCode ?? "").trim();
+    this.materialName = String(payload?.materialName ?? "").trim();
+    this.lotId = String(payload?.lotId ?? "").trim();
+    this.make = String(payload?.make ?? "").trim();
+    const gradeRaw = payload?.grade;
+    if (gradeRaw && typeof gradeRaw === "object" && !Array.isArray(gradeRaw)) {
+      const grade = gradeRaw as Record<string, unknown>;
+      const gradeCode = String(grade.gradeCode ?? "").trim();
+      this.grade = gradeCode
+        ? {
+            gradeId: (grade.gradeId as string | number) ?? "",
+            gradeCode,
+            gradeName: String(grade.gradeName ?? gradeCode).trim(),
+            specifications: Array.isArray(grade.specifications)
+              ? grade.specifications
+              : undefined,
+          }
+        : null;
+    } else {
+      this.grade = null;
+    }
+  }
+}
+
+export class MaterialLotsListModel {
+  batchId: string;
+  materials: MaterialLotItemModel[];
+
+  constructor(payload: { batchId?: string; materials?: MaterialLotItemModel[] }) {
+    this.batchId = payload?.batchId ?? "";
+    this.materials = payload?.materials ?? [];
+  }
+
+  static fromApi(apiResponse: { data?: unknown }): MaterialLotsListModel {
+    const data = (apiResponse?.data ?? {}) as Record<string, unknown>;
+    const materials = Array.isArray(data.materials)
+      ? data.materials.map((item) => new MaterialLotItemModel(item as Record<string, unknown>))
+      : [];
+
+    return new MaterialLotsListModel({
+      batchId: String(data.batchId ?? ""),
+      materials,
+    });
+  }
+}

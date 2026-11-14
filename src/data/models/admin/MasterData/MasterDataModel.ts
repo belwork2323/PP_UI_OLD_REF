@@ -1,0 +1,449 @@
+import {
+  isMasterDataDecimalInputIncomplete,
+  parseMasterDataOptionalNumber,
+} from "@data/models/admin/MasterData/masterDataNumericInput";
+import {
+  SUBSCALE_ARTICLES_TYPE,
+  composeBemArticleName,
+  isSubscaleBemArticle,
+} from "@data/models/admin/MasterData/subscaleArticleMasterForm";
+
+export type MasterDataFieldDef = {
+  key: string;
+  label: string;
+  dataType: string;
+  required?: boolean;
+  maxLength?: number | null;
+  min?: number | null;
+  max?: number | null;
+  pattern?: string | null;
+  readOnlyOnUpdate?: boolean;
+  serverGenerated?: boolean;
+  attribute?: boolean;
+};
+
+export type MasterDataTypeDescriptor = {
+  type: string;
+  label: string;
+  fields: MasterDataFieldDef[];
+};
+
+export type MasterDataPersonInfo = {
+  id: string;
+  fullName: string;
+};
+
+export type MasterDataAuditFields = {
+  createdBy?: MasterDataPersonInfo | null;
+  createdOn?: string | null;
+  updatedBy?: MasterDataPersonInfo | null;
+  updatedOn?: string | null;
+};
+
+export const parseMasterDataAuditFields = (raw: any): MasterDataAuditFields => ({
+  createdBy: raw?.createdBy
+    ? { id: String(raw.createdBy.id ?? ""), fullName: String(raw.createdBy.fullName ?? "") }
+    : null,
+  createdOn: raw?.createdOn ?? null,
+  updatedBy: raw?.updatedBy
+    ? { id: String(raw.updatedBy.id ?? ""), fullName: String(raw.updatedBy.fullName ?? "") }
+    : null,
+  updatedOn: raw?.updatedOn ?? null,
+});
+
+export type MasterDataRecord = MasterDataAuditFields & {
+  id: number;
+  code: string;
+  name: string;
+  isActive: boolean;
+  attributes: Record<string, unknown>;
+};
+
+export type MasterDataStats = {
+  total: number;
+  active: number;
+  inactive: number;
+};
+
+export type MasterDataListPayload = {
+  type: string;
+  schema: MasterDataTypeDescriptor | null;
+  items: MasterDataRecord[];
+  stats: MasterDataStats;
+};
+
+export type MasterDataFormState = {
+  id: number | null;
+  code: string;
+  name: string;
+  isActive: boolean;
+  attributes: Record<string, string | number | boolean>;
+};
+
+export const emptyMasterDataStats = (): MasterDataStats => ({
+  total: 0,
+  active: 0,
+  inactive: 0,
+});
+
+export const MasterDataRecordModel = {
+  fromApi: (raw: any): MasterDataRecord => ({
+    ...parseMasterDataAuditFields(raw),
+    id: Number(raw?.id),
+    code: String(raw?.code ?? ""),
+    name: String(raw?.name ?? ""),
+    isActive: raw?.isActive !== false,
+    attributes: raw?.attributes && typeof raw.attributes === "object" ? { ...raw.attributes } : {},
+  }),
+};
+
+export const MasterDataTypeModel = {
+  fromApi: (raw: any): MasterDataTypeDescriptor => ({
+    type: String(raw?.type ?? ""),
+    label: String(raw?.label ?? ""),
+    fields: Array.isArray(raw?.fields)
+      ? raw.fields.map((f: any) => ({
+          key: String(f?.key ?? ""),
+          label: String(f?.label ?? ""),
+          dataType: String(f?.dataType ?? "STRING"),
+          required: Boolean(f?.required),
+          maxLength: f?.maxLength ?? null,
+          min: f?.min ?? null,
+          max: f?.max ?? null,
+          pattern: f?.pattern ?? null,
+          readOnlyOnUpdate: Boolean(f?.readOnlyOnUpdate),
+          serverGenerated: Boolean(f?.serverGenerated),
+          attribute: Boolean(f?.attribute),
+        }))
+      : [],
+  }),
+};
+
+export const MasterDataListModel = {
+  fromApi: (res: any): MasterDataListPayload => {
+    const data = res?.data ?? {};
+    return {
+      type: String(data?.type ?? ""),
+      schema: data?.schema ? MasterDataTypeModel.fromApi(data.schema) : null,
+      items: Array.isArray(data?.items) ? data.items.map(MasterDataRecordModel.fromApi) : [],
+      stats: {
+        total: Number(data?.stats?.total ?? 0),
+        active: Number(data?.stats?.active ?? 0),
+        inactive: Number(data?.stats?.inactive ?? 0),
+      },
+    };
+  },
+};
+
+export const createEmptyMasterDataForm = (schema?: MasterDataTypeDescriptor | null): MasterDataFormState => {
+  const attributes: Record<string, string | number | boolean> = {};
+  (schema?.fields ?? [])
+    .filter((f) => f.attribute)
+    .forEach((f) => {
+      if (f.dataType === "INTEGER" || f.dataType === "NUMBER" || f.dataType === "DOUBLE") {
+        attributes[f.key] = "";
+      } else if (f.dataType === "BOOLEAN") {
+        // Subscale articles default to Other (isBem=false); other masters keep true.
+        attributes[f.key] = schema?.type === SUBSCALE_ARTICLES_TYPE && f.key === "isBem" ? false : true;
+      } else {
+        attributes[f.key] = "";
+      }
+    });
+  if (schema?.type === SUBSCALE_ARTICLES_TYPE) {
+    attributes.bemUnit = "";
+    attributes.bemSize = "";
+  }
+  return {
+    id: null,
+    code: "",
+    name: "",
+    isActive: true,
+    attributes,
+  };
+};
+
+export const mapRecordToForm = (
+  record: MasterDataRecord,
+  schema?: MasterDataTypeDescriptor | null,
+): MasterDataFormState => {
+  const base = createEmptyMasterDataForm(schema);
+  return {
+    ...base,
+    id: record.id,
+    code: record.code,
+    name: record.name,
+    isActive: record.isActive,
+    attributes: {
+      ...base.attributes,
+      ...Object.fromEntries(
+        Object.entries(record.attributes ?? {}).map(([k, v]) => [k, v as string | number | boolean]),
+      ),
+    },
+  };
+};
+
+export const getMasterDataErrorMessage = (resp: any, fallback: string) => {
+  if (resp == null) return fallback;
+  const direct = typeof resp.message === "string" ? resp.message.trim() : "";
+  if (direct) return direct;
+  const nested =
+    (typeof resp?.error?.message === "string" && resp.error.message.trim()) ||
+    (typeof resp?.response?.data?.message === "string" &&
+      resp.response.data.message.trim()) ||
+    (typeof resp?.data?.message === "string" && resp.data.message.trim()) ||
+    "";
+  return nested || fallback;
+};
+
+/** Same wording as backend MasterDataValidation. */
+export const MASTER_DATA_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/\\-]*$/;
+export const MASTER_DATA_CODE_FORMAT_MESSAGE =
+  "Code must start with a letter or digit and contain only letters, digits, . _ / \\ -";
+export const MASTER_DATA_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _/\\-]*$/;
+export const MASTER_DATA_NAME_FORMAT_MESSAGE =
+  "Name must start with a letter or digit and contain only letters, digits, spaces, hyphen, underscore, / and \\";
+
+export type MasterDataFieldErrors = Record<string, string>;
+
+const fieldErrorForCode = (codeRaw: string, maxLength?: number | null): string | null => {
+  const code = codeRaw.trim();
+  if (!code) return "Code is required";
+  if (maxLength && code.length > maxLength) return "Code must not exceed 64 characters";
+  if (!MASTER_DATA_CODE_PATTERN.test(code)) return MASTER_DATA_CODE_FORMAT_MESSAGE;
+  return null;
+};
+
+const fieldErrorForName = (
+  nameRaw: string,
+  maxLength?: number | null,
+  pattern?: string | null,
+): string | null => {
+  const name = nameRaw.trim();
+  if (!name) return "Name is required";
+  if (maxLength && name.length > maxLength) return "Name must not exceed 255 characters";
+  const namePattern = pattern ? new RegExp(pattern) : MASTER_DATA_NAME_PATTERN;
+  if (!namePattern.test(name)) return MASTER_DATA_NAME_FORMAT_MESSAGE;
+  return null;
+};
+
+const INTEGER_INPUT_PATTERN = /^\d+$/;
+const INTEGER_INPUT_PATTERN_SIGNED = /^-?\d+$/;
+
+const parseIntegerAttribute = (
+  raw: string | number | boolean | undefined,
+  allowNegative: boolean,
+): number | null => {
+  if (raw === "" || raw === null || raw === undefined) return null;
+  if (typeof raw === "boolean") return null;
+  if (typeof raw === "number") {
+    return Number.isInteger(raw) ? raw : null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const pattern = allowNegative ? INTEGER_INPUT_PATTERN_SIGNED : INTEGER_INPUT_PATTERN;
+  if (!pattern.test(trimmed)) return null;
+  const num = Number(trimmed);
+  return Number.isInteger(num) ? num : null;
+};
+
+const fieldErrorForAttribute = (
+  field: MasterDataFieldDef,
+  raw: string | number | boolean | undefined,
+): string | null => {
+  if (field.dataType === "INTEGER") {
+    const allowNegative = field.min == null || field.min < 0;
+    const num = parseIntegerAttribute(raw, allowNegative);
+    if (num == null) {
+      if (raw === "" || raw === null || raw === undefined) {
+        return field.required ? `${field.label} is required` : null;
+      }
+      return `${field.label} must be a whole number`;
+    }
+    if (field.min != null && num < field.min) {
+      return `${field.label} must be at least ${field.min}`;
+    }
+    if (field.max != null && num > field.max) {
+      return `${field.label} must be at most ${field.max}`;
+    }
+    return null;
+  }
+  if (field.dataType === "NUMBER" || field.dataType === "DOUBLE") {
+    if (raw === "" || raw === null || raw === undefined) {
+      return field.required ? `${field.label} is required` : null;
+    }
+    if (typeof raw === "boolean") return `${field.label} must be a number`;
+    if (typeof raw === "string" && isMasterDataDecimalInputIncomplete(raw)) {
+      return `${field.label} must be a number`;
+    }
+    const num =
+      typeof raw === "number"
+        ? raw
+        : parseMasterDataOptionalNumber(String(raw ?? ""));
+    if (num == null) return `${field.label} must be a number`;
+    return null;
+  }
+  const value = String(raw ?? "").trim();
+  if (!value) {
+    return field.required ? `${field.label} is required` : null;
+  }
+  if (field.maxLength && value.length > field.maxLength) {
+    return `${field.label} must not exceed ${field.maxLength} characters`;
+  }
+  if (field.pattern && !new RegExp(field.pattern).test(value)) {
+    return `${field.label} has an invalid format`;
+  }
+  return null;
+};
+
+/** Per-field errors using the same messages as backend validation. */
+export const getMasterDataFieldErrors = (
+  form: MasterDataFormState,
+  schema: MasterDataTypeDescriptor | null,
+  isEdit: boolean,
+): MasterDataFieldErrors => {
+  const errors: MasterDataFieldErrors = {};
+  if (!schema) return errors;
+
+  const isSubscaleArticles = schema.type === SUBSCALE_ARTICLES_TYPE;
+  const subscaleIsBem = isSubscaleArticles && isSubscaleBemArticle(form);
+
+  for (const field of schema.fields) {
+    if (field.key === "code") {
+      if (isEdit || field.serverGenerated) continue;
+      const err = fieldErrorForCode(form.code, field.maxLength);
+      if (err) errors.code = err;
+      continue;
+    }
+    if (field.key === "name") {
+      if (field.serverGenerated) continue;
+      if (isSubscaleArticles && subscaleIsBem) {
+        const size = form.attributes.bemSize;
+        const unit = String(form.attributes.bemUnit ?? "").trim();
+        if (size === "" || size == null || !unit) {
+          // Size/unit errors are reported on those fields; name is derived.
+          continue;
+        }
+        const expected = composeBemArticleName(size as number | string, unit);
+        if (form.name.trim() !== expected) {
+          errors.name = `BEM article name must be '${expected}'`;
+        }
+        continue;
+      }
+      const err = fieldErrorForName(form.name, field.maxLength, field.pattern);
+      if (err) errors.name = err;
+      continue;
+    }
+    if (field.key === "isActive" || !field.attribute) continue;
+
+    if (isSubscaleArticles) {
+      if (field.key === "isBem") {
+        if (form.attributes.isBem !== true && form.attributes.isBem !== false) {
+          errors.isBem = "Article kind is required";
+        }
+        continue;
+      }
+      if (field.key === "bemSize") {
+        if (subscaleIsBem) {
+          const err = fieldErrorForAttribute({ ...field, required: true, label: "Size" }, form.attributes.bemSize);
+          if (err) errors.bemSize = err;
+        }
+        continue;
+      }
+      if (field.key === "bemUnit") {
+        if (subscaleIsBem) {
+          const unit = String(form.attributes.bemUnit ?? "").trim();
+          if (!unit) {
+            errors.bemUnit = "Unit is required";
+          }
+        }
+        continue;
+      }
+    }
+
+    const err = fieldErrorForAttribute(field, form.attributes[field.key]);
+    if (err) errors[field.key] = err;
+  }
+  return errors;
+};
+
+export const validateMasterDataForm = (
+  form: MasterDataFormState,
+  schema: MasterDataTypeDescriptor | null,
+  isEdit: boolean,
+): string | null => {
+  if (!schema) return "Schema not loaded";
+  const errors = getMasterDataFieldErrors(form, schema, isEdit);
+  return Object.values(errors)[0] ?? null;
+};
+
+export const buildCreatePayload = (form: MasterDataFormState, schema: MasterDataTypeDescriptor | null) => {
+  const attributes: Record<string, unknown> = {};
+  const isSubscaleArticles = schema?.type === SUBSCALE_ARTICLES_TYPE;
+  const subscaleIsBem = isSubscaleArticles && isSubscaleBemArticle(form);
+
+  (schema?.fields ?? [])
+    .filter((f) => f.attribute)
+    .forEach((f) => {
+      const raw = form.attributes[f.key];
+      if (isSubscaleArticles && (f.key === "bemSize" || f.key === "bemUnit") && !subscaleIsBem) {
+        return;
+      }
+      if (f.dataType === "BOOLEAN") {
+        attributes[f.key] = Boolean(raw);
+        return;
+      }
+      if (f.dataType === "INTEGER" || f.dataType === "NUMBER" || f.dataType === "DOUBLE") {
+        if (raw === "" || raw === null || raw === undefined) return;
+        if (f.dataType === "INTEGER") {
+          attributes[f.key] = Number(raw);
+        } else {
+          const num = parseMasterDataOptionalNumber(String(raw));
+          if (num != null) attributes[f.key] = num;
+        }
+        return;
+      }
+      attributes[f.key] = String(raw ?? "").trim();
+    });
+
+  if (isSubscaleArticles && subscaleIsBem) {
+    attributes.isBem = true;
+    const unit = String(form.attributes.bemUnit ?? "").trim();
+    if (unit) attributes.bemUnit = unit;
+    const size = form.attributes.bemSize;
+    if (size !== "" && size != null) {
+      attributes.bemSize = Number(size);
+    }
+  }
+
+  const codeField = schema?.fields?.find((f) => f.key === "code");
+  const nameField = schema?.fields?.find((f) => f.key === "name");
+  const payload: Record<string, unknown> = {
+    isActive: form.isActive,
+    attributes,
+  };
+  if (isSubscaleArticles && subscaleIsBem) {
+    const size = form.attributes.bemSize;
+    const unit = String(attributes.bemUnit ?? "").trim();
+    if (size !== "" && size != null && unit) {
+      payload.name = composeBemArticleName(size as number | string, unit);
+    }
+  } else if (!nameField?.serverGenerated && form.name.trim()) {
+    payload.name = form.name.trim();
+  }
+  if (!codeField?.serverGenerated && form.code.trim()) {
+    payload.code = form.code.trim();
+  }
+  return payload;
+};
+
+export const buildUpdatePayload = (form: MasterDataFormState, schema: MasterDataTypeDescriptor | null) => ({
+  id: form.id,
+  code: form.code.trim(),
+  ...buildCreatePayload(form, schema),
+});
+
+export const isMasterDataFormComplete = (
+  form: MasterDataFormState,
+  schema: MasterDataTypeDescriptor | null,
+  isEdit: boolean,
+): boolean => validateMasterDataForm(form, schema, isEdit) === null;

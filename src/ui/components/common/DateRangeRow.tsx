@@ -1,0 +1,214 @@
+import { Stack, Typography, Chip, SxProps, Theme, TextFieldProps } from "@mui/material";
+import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
+import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import {
+  AppDatePickerProvider,
+  appDatePickerFieldSlots,
+  buildAppDatePickerSlotProps,
+  parseUiDate,
+  UI_DATE_FORMAT,
+} from "./datePickerShared";
+import { APP_CONTROL_HEIGHT } from "./fieldStyles";
+import { formatDateToApiDate, formatToUiDate } from "../../../utils/dateUtils";
+import { getFromToOrderMessages } from "../../../data/validation/dateRangeValidation";
+
+interface DateRangeRowProps {
+  from: string;
+  to: string;
+  onFromChange: (v: string) => void;
+  onToChange: (v: string) => void;
+
+  currentMonthOnly?: boolean;
+  onToggleMonth?: () => void;
+
+  fromLabel?: string;
+  toLabel?: string;
+  separatorLabel?: string;
+  thisMonthLabel?: string;
+
+  /** Hide the leading decorative calendar icon (pickers already have one). */
+  showLeadingIcon?: boolean;
+  calendarIconSx?: SxProps<Theme>;
+  datePickerSx?: SxProps<Theme>;
+  separatorSx?: SxProps<Theme>;
+  thisMonthChipSx?: (active: boolean) => SxProps<Theme>;
+  textFieldProps?: Partial<TextFieldProps>;
+  /** Compact height / font to match adjacent filter controls. */
+  controlHeight?: number;
+  /** Keep start/end pickers on one line (filter bars). */
+  nowrap?: boolean;
+  /** Align pickers with adjacent filter dropdown / buttons. */
+  alignInputs?: "filter";
+  /** Styles applied to the outer date-range row container. */
+  containerSx?: SxProps<Theme>;
+  /**
+   * When false, allow selecting To before From (still shows order errors).
+   * Default true keeps To ≥ From via minDate.
+   */
+  enforceMinToDate?: boolean;
+}
+
+/** Parse filter value (DD-MM-YYYY or YYYY-MM-DD) to dayjs. */
+const toDayjsValue = (date: string) => {
+  const normalized = formatToUiDate(date);
+  return normalized ? parseUiDate(normalized) : null;
+};
+
+/** Emit DD-MM-YYYY for filter/API consumers. */
+const toFilterDate = (value: ReturnType<typeof parseUiDate>) =>
+  value?.isValid() ? formatDateToApiDate(value.toDate()) : "";
+
+const DateRangeRow = ({
+  from,
+  to,
+  onFromChange,
+  onToChange,
+
+  currentMonthOnly = false,
+  onToggleMonth,
+
+  fromLabel = "From",
+  toLabel = "To",
+  separatorLabel = "to",
+  thisMonthLabel = "This Month",
+
+  showLeadingIcon = true,
+  calendarIconSx,
+  datePickerSx,
+  separatorSx,
+  thisMonthChipSx,
+  textFieldProps,
+  controlHeight,
+  nowrap = false,
+  alignInputs,
+  containerSx,
+  enforceMinToDate = true,
+}: DateRangeRowProps) => {
+  const isFilterLayout = alignInputs === "filter";
+  const resolvedControlHeight = controlHeight ?? (isFilterLayout ? APP_CONTROL_HEIGHT : 36);
+  const rangeMessages = getFromToOrderMessages(from, to, "date");
+
+  const compactFieldSx = isFilterLayout
+    ? {
+        width: 152,
+        minWidth: 152,
+        ...(datePickerSx as object),
+      }
+    : {
+        mb: 0,
+        width: 152,
+        minWidth: 152,
+        ...(datePickerSx as object),
+        "& .MuiInputBase-root:not(.MuiInputBase-multiline)": {
+          minHeight: resolvedControlHeight,
+          height: resolvedControlHeight,
+        },
+        "& .MuiInputBase-input:not(textarea)": {
+          py: 0,
+          px: 1.25,
+          fontSize: "0.8125rem",
+          letterSpacing: "0.01em",
+        },
+      };
+
+  const sharedSlotProps = {
+    ...buildAppDatePickerSlotProps({
+      compact: isFilterLayout,
+      filterPanel: isFilterLayout,
+      sx: compactFieldSx as SxProps<Theme>,
+    }),
+    textField: {
+      ...buildAppDatePickerSlotProps({
+        compact: isFilterLayout,
+        filterPanel: isFilterLayout,
+        sx: compactFieldSx as SxProps<Theme>,
+      }).textField,
+      ...textFieldProps,
+    },
+  };
+
+  return (
+    <AppDatePickerProvider>
+      <Stack
+        direction="row"
+        gap={1}
+        alignItems={isFilterLayout ? "flex-end" : "center"}
+        flexWrap={nowrap ? "nowrap" : "wrap"}
+        sx={containerSx}
+      >
+        {showLeadingIcon && (
+          <CalendarMonthIcon sx={{ fontSize: 18, opacity: 0.7, ...((calendarIconSx as object) || {}) }} />
+        )}
+
+        <DatePicker
+          {...appDatePickerFieldSlots}
+          label={fromLabel}
+          format={UI_DATE_FORMAT}
+          disabled={currentMonthOnly}
+          value={toDayjsValue(from)}
+          onChange={(value) => {
+            onFromChange(toFilterDate(value));
+          }}
+          slotProps={{
+            ...sharedSlotProps,
+            textField: {
+              ...sharedSlotProps.textField,
+              inputProps: { readOnly: true },
+              error: Boolean(rangeMessages?.from),
+              helperText: rangeMessages?.from ?? (sharedSlotProps.textField as any)?.helperText,
+            },
+          }}
+        />
+
+        <Typography
+          sx={{
+            fontSize: "0.85rem",
+            color: "text.secondary",
+            px: 0.25,
+            ...(isFilterLayout
+              ? { alignSelf: "center", mb: "10px" }
+              : {}),
+            ...((separatorSx as object) || {}),
+          }}
+        >
+          {separatorLabel}
+        </Typography>
+
+        <DatePicker
+          {...appDatePickerFieldSlots}
+          label={toLabel}
+          format={UI_DATE_FORMAT}
+          disabled={currentMonthOnly}
+          value={toDayjsValue(to)}
+          minDate={enforceMinToDate ? toDayjsValue(from) ?? undefined : undefined}
+          onChange={(value) => onToChange(toFilterDate(value))}
+          slotProps={{
+            ...sharedSlotProps,
+            textField: {
+              ...sharedSlotProps.textField,
+              inputProps: { readOnly: true },
+              error: Boolean(rangeMessages?.to),
+              helperText: rangeMessages?.to ?? (sharedSlotProps.textField as any)?.helperText,
+            },
+          }}
+        />
+
+        {onToggleMonth && thisMonthChipSx && (
+          <Chip
+            clickable
+            size="small"
+            label={thisMonthLabel}
+            onClick={onToggleMonth}
+            sx={thisMonthChipSx(currentMonthOnly)}
+          />
+        )}
+      </Stack>
+    </AppDatePickerProvider>
+  );
+};
+
+export default DateRangeRow;
+
+/** True when both ends are empty or From ≤ To. */
+export const isDateRangeOrderValid = (from: string, to: string): boolean =>
+  !getFromToOrderMessages(from, to, "date");

@@ -1,0 +1,898 @@
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import {
+  Box,
+  Button,
+  IconButton,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+  alpha,
+} from "@mui/material";
+import { QC_DIVISION_BRAND } from "../../../../../app/theme/custom_themes/user/qualityControl/tokens";
+import type { SchemaFormValues } from "@/data/models/shared/sectionFormTypes";
+import type { FileRef } from "../../../../../data/models/common/FileUploadModel";
+import QCDivisionFileField from "./QCDivisionFileField";
+import {
+  QC_PROPELLANT_AVG_COLUMN,
+  QC_PROPELLANT_ROW_UPLOAD_FIELD,
+  QC_PROPELLANT_SECTION_IDS,
+  QC_PROPELLANT_SECTION_TITLES,
+  QC_PROPELLANT_STD_COLUMN,
+  getQcPropellantBemSubLabel,
+  getQcPropellantFmColumnLabel,
+  getQcPropellantMotorLabel,
+  groupQcPropellantBemColumns,
+  resolveQcPropellantPremixCount,
+  type QcPropellantBallisticRow,
+  type QcPropellantPropertyRow,
+} from "../../../../../hooks/user/qualityControl/qcPropellantConfig";
+import {
+  addPropellantBemColumn,
+  applyPropellantRowStats,
+  getPropellantBallisticColumns,
+  getPropellantBallisticRows,
+  getPropellantFmColumns,
+  getPropellantMechanicalGraph,
+  getPropellantPropertyRows,
+  removePropellantBemColumn,
+  setPropellantBallisticRows,
+  setPropellantMechanicalGraph,
+  setPropellantPropertyRows,
+  syncPropellantFmColumns,
+} from "../../../../../hooks/user/qualityControl/qcPropellantTables";
+import {
+  QCDivisionReadOnlyValue,
+  qcReadOnlyBodyCellSx,
+  qcReadOnlyTableContainerSx,
+  qcReadOnlyTableHeaderCellSx,
+} from "./components/QCDivisionReadOnlyValue";
+import { uniformTableHeaderCellSx } from "@app/theme/custom_themes/shared/data_table_theme";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+import FieldErrorText from "@/ui/components/validation/FieldErrorText";
+import { fieldError } from "@/data/validation/adapters/qcPropellant.validation";
+
+const BRAND = QC_DIVISION_BRAND;
+const TABLE_BORDER = alpha(BRAND.primary, 0.18);
+const HEADER_CELL_BORDER = alpha("#fff", 0.22);
+
+const TH = {
+  ...uniformTableHeaderCellSx(BRAND.primary, BRAND.primaryLight, {
+    headerFontSize: "0.68rem",
+    headerLetterSpacing: "0.06em",
+    headerPaddingY: "10px",
+    headerPaddingX: "12px",
+  }),
+  border: `1px solid ${HEADER_CELL_BORDER}`,
+};
+
+const cellSx = {
+  fontSize: "0.72rem",
+  py: 0.75,
+  px: 0.75,
+  verticalAlign: "middle",
+  border: `1px solid ${TABLE_BORDER}`,
+};
+
+const tableFieldSx = { "& .MuiOutlinedInput-root": { fontSize: "0.72rem" } };
+
+const SectionCard = ({
+  title,
+  children,
+  readOnly = false,
+  actions = null,
+}: {
+  title: string;
+  children: ReactNode;
+  readOnly?: boolean;
+  actions?: ReactNode;
+}) =>
+  readOnly ? (
+    <Box
+      sx={{
+        border: `1px solid ${BRAND.border}`,
+        borderRadius: 1,
+        background: "#fff",
+        p: 1.5,
+      }}
+    >
+      <Typography sx={{ fontSize: "0.78rem", fontWeight: 800, color: BRAND.primary, mb: 0.75 }}>
+        {title}
+      </Typography>
+      {children}
+    </Box>
+  ) : (
+    <Box
+      sx={{
+        borderRadius: 2,
+        border: `1px solid ${TABLE_BORDER}`,
+        background: "#fff",
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          px: 1.5,
+          py: 0.85,
+          background: `linear-gradient(135deg, ${BRAND.primary}, ${BRAND.primaryLight})`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+        }}
+      >
+        <Typography sx={{ fontSize: "0.76rem", fontWeight: 800, color: "#fff", letterSpacing: "0.04em" }}>
+          {title}
+        </Typography>
+        {actions}
+      </Box>
+      <Box sx={{ p: 1.5 }}>{children}</Box>
+    </Box>
+  );
+
+const CellInput = ({
+  value,
+  onChange,
+  disabled,
+  readOnly,
+  multiline = false,
+  type = "text",
+  fieldPath,
+  error = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  multiline?: boolean;
+  type?: "text" | "number";
+  fieldPath?: string;
+  error?: boolean;
+}) => {
+  if (readOnly) {
+    return <QCDivisionReadOnlyValue value={value} muted={!String(value).trim()} />;
+  }
+  return (
+    <TextField
+      size="small"
+      fullWidth
+      type={type === "number" ? "number" : "text"}
+      value={value}
+      disabled={disabled}
+      error={error}
+      onChange={(event) => onChange(event.target.value)}
+      multiline={multiline}
+      minRows={multiline ? 2 : undefined}
+      inputProps={fieldPath ? { "data-qc-field": fieldPath } : undefined}
+      sx={tableFieldSx}
+    />
+  );
+};
+
+type PropertyTableProps = {
+  sectionId: string;
+  rows: QcPropellantPropertyRow[];
+  columns: string[];
+  onRowsChange: (rows: QcPropellantPropertyRow[]) => void;
+  onRowFilesChange?: (rowIndex: number, next: FileRef[]) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  includeSampleNo?: boolean;
+  includeRowStats?: boolean;
+  includeRowUpload?: boolean;
+  validationErrors?: Record<string, string> | null;
+};
+
+const PropertyTable = ({
+  sectionId,
+  rows,
+  columns,
+  onRowsChange,
+  onRowFilesChange,
+  readOnly = false,
+  disabled = false,
+  includeSampleNo = false,
+  includeRowStats = false,
+  includeRowUpload = false,
+  validationErrors = null,
+}: PropertyTableProps) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+  const inputsDisabled = disabled || readOnly;
+  const displayRows = includeRowStats
+    ? rows.filter((row) => row.kind !== "mean" && row.kind !== "std")
+    : rows;
+
+  const updateCell = (index: number, field: string, value: string | FileRef[]) => {
+    onRowsChange(
+      rows.map((row, rowIndex) => {
+        if (rowIndex !== index) return row;
+        const next = { ...row, [field]: value };
+        if (includeRowStats && typeof value === "string" && columns.includes(field)) {
+          return applyPropellantRowStats(next, columns);
+        }
+        return next;
+      }),
+    );
+  };
+
+  const displayValue = (row: QcPropellantPropertyRow, columnId: string) => String(row[columnId] ?? "");
+
+  return (
+    <Box>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : {
+                overflow: "hidden",
+                overflowX: "auto",
+                border: `1px solid ${TABLE_BORDER}`,
+                borderRadius: 2,
+                background: "#fff",
+              }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 720, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              {includeSampleNo ? <TableCell sx={headerSx}>Sample No</TableCell> : null}
+              <TableCell sx={headerSx}>Property</TableCell>
+              <TableCell sx={headerSx}>
+                <FieldLabelWithAsterisk
+                  label={
+                    sectionId === QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES
+                      ? "Spec."
+                      : "Specification"
+                  }
+                  required
+                  sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                />
+              </TableCell>
+              {columns.map((columnId) => (
+                <TableCell key={columnId} sx={headerSx}>
+                  <FieldLabelWithAsterisk
+                    label={getQcPropellantFmColumnLabel(columnId)}
+                    required
+                    sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                  />
+                </TableCell>
+              ))}
+              {includeRowStats ? (
+                <>
+                  <TableCell sx={headerSx}>
+                    <FieldLabelWithAsterisk
+                      label="Avg"
+                      required
+                      sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                    />
+                  </TableCell>
+                  <TableCell sx={headerSx}>
+                    <FieldLabelWithAsterisk
+                      label="Std Dev"
+                      required
+                      sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                    />
+                  </TableCell>
+                </>
+              ) : null}
+              {includeRowUpload ? <TableCell sx={headerSx}>Upload</TableCell> : null}
+              <TableCell sx={headerSx}>QA Remarks</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {displayRows.map((row) => {
+              const index = rows.indexOf(row);
+              const uploadFiles = Array.isArray(row[QC_PROPELLANT_ROW_UPLOAD_FIELD])
+                ? (row[QC_PROPELLANT_ROW_UPLOAD_FIELD] as FileRef[])
+                : [];
+              return (
+                <TableRow
+                  key={`${sectionId}-${index}-${row.PROPERTY}`}
+                  sx={{
+                    background: readOnly
+                      ? index % 2 === 1
+                        ? alpha(BRAND.primary, 0.03)
+                        : "#fff"
+                      : index % 2 === 0
+                        ? "#fff"
+                        : alpha(BRAND.surface, 0.55),
+                  }}
+                >
+                  {includeSampleNo ? (
+                    <TableCell sx={bodyCellSx}>
+                      {readOnly ? (
+                        <QCDivisionReadOnlyValue value={row.SAMPLE_NO ?? ""} muted={row.SAMPLE_NO === ""} />
+                      ) : (
+                        row.SAMPLE_NO ?? ""
+                      )}
+                    </TableCell>
+                  ) : null}
+                  <TableCell sx={bodyCellSx}>
+                    {readOnly ? (
+                      <QCDivisionReadOnlyValue value={row.PROPERTY} />
+                    ) : (
+                      row.PROPERTY
+                    )}
+                  </TableCell>
+                  <TableCell sx={bodyCellSx}>
+                    {(() => {
+                      const path = `${sectionId}.${index}.SPECIFICATION`;
+                      const message = fieldError(validationErrors ?? undefined, path);
+                      return (
+                        <>
+                          <CellInput
+                            value={String(row.SPECIFICATION ?? "")}
+                            onChange={(value) => updateCell(index, "SPECIFICATION", value)}
+                            disabled={inputsDisabled}
+                            readOnly={readOnly}
+                            fieldPath={path}
+                            error={Boolean(message)}
+                          />
+                          {!readOnly ? <FieldErrorText message={message} /> : null}
+                        </>
+                      );
+                    })()}
+                  </TableCell>
+                  {columns.map((columnId) => {
+                    const path = `${sectionId}.${index}.${columnId}`;
+                    const message = fieldError(validationErrors ?? undefined, path);
+                    return (
+                      <TableCell key={columnId} sx={bodyCellSx}>
+                        <CellInput
+                          value={displayValue(row, columnId)}
+                          onChange={(value) => updateCell(index, columnId, value)}
+                          disabled={inputsDisabled}
+                          readOnly={readOnly}
+                          type="number"
+                          fieldPath={path}
+                          error={Boolean(message)}
+                        />
+                        {!readOnly ? <FieldErrorText message={message} /> : null}
+                      </TableCell>
+                    );
+                  })}
+                  {includeRowStats ? (
+                    <>
+                      <TableCell sx={bodyCellSx}>
+                        {(() => {
+                          const path = `${sectionId}.${index}.${QC_PROPELLANT_AVG_COLUMN}`;
+                          const message = fieldError(validationErrors ?? undefined, path);
+                          return (
+                            <>
+                              <CellInput
+                                value={String(row[QC_PROPELLANT_AVG_COLUMN] ?? "")}
+                                onChange={(value) =>
+                                  updateCell(index, QC_PROPELLANT_AVG_COLUMN, value)
+                                }
+                                disabled={inputsDisabled}
+                                readOnly={readOnly}
+                                type="number"
+                                fieldPath={path}
+                                error={Boolean(message)}
+                              />
+                              {!readOnly ? <FieldErrorText message={message} /> : null}
+                            </>
+                          );
+                        })()}
+                      </TableCell>
+                      <TableCell sx={bodyCellSx}>
+                        {(() => {
+                          const path = `${sectionId}.${index}.${QC_PROPELLANT_STD_COLUMN}`;
+                          const message = fieldError(validationErrors ?? undefined, path);
+                          return (
+                            <>
+                              <CellInput
+                                value={String(row[QC_PROPELLANT_STD_COLUMN] ?? "")}
+                                onChange={(value) =>
+                                  updateCell(index, QC_PROPELLANT_STD_COLUMN, value)
+                                }
+                                disabled={inputsDisabled}
+                                readOnly={readOnly}
+                                type="number"
+                                fieldPath={path}
+                                error={Boolean(message)}
+                              />
+                              {!readOnly ? <FieldErrorText message={message} /> : null}
+                            </>
+                          );
+                        })()}
+                      </TableCell>
+                    </>
+                  ) : null}
+                  {includeRowUpload ? (
+                    <TableCell sx={bodyCellSx}>
+                      <Box sx={{ minWidth: 160, maxWidth: 280 }}>
+                        <QCDivisionFileField
+                          files={uploadFiles}
+                          onChange={(next) =>
+                            onRowFilesChange
+                              ? onRowFilesChange(index, next)
+                              : updateCell(index, QC_PROPELLANT_ROW_UPLOAD_FIELD, next)
+                          }
+                          disabled={inputsDisabled}
+                          readOnly={readOnly}
+                          multiple
+                          acceptMode="imageVideoPdf"
+                          compact
+                          emptyLabel="Upload"
+                        />
+                      </Box>
+                    </TableCell>
+                  ) : null}
+                  <TableCell sx={bodyCellSx}>
+                    {(() => {
+                      const path = `${sectionId}.${index}.QA_REMARKS`;
+                      const message = fieldError(validationErrors ?? undefined, path);
+                      return (
+                        <>
+                          <CellInput
+                            value={String(row.QA_REMARKS ?? "")}
+                            onChange={(value) => updateCell(index, "QA_REMARKS", value)}
+                            disabled={inputsDisabled}
+                            readOnly={readOnly}
+                            multiline
+                            fieldPath={path}
+                            error={Boolean(message)}
+                          />
+                          {!readOnly ? <FieldErrorText message={message} /> : null}
+                        </>
+                      );
+                    })()}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+};
+
+const BallisticTable = ({
+  rows,
+  columns,
+  onRowsChange,
+  onAddBem,
+  onRemoveBem,
+  readOnly = false,
+  disabled = false,
+  validationErrors = null,
+}: {
+  rows: QcPropellantBallisticRow[];
+  columns: string[];
+  onRowsChange: (rows: QcPropellantBallisticRow[]) => void;
+  onAddBem: (fmIndex: number) => void;
+  onRemoveBem: (columnId: string) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  validationErrors?: Record<string, string> | null;
+}) => {
+  const headerSx = readOnly ? qcReadOnlyTableHeaderCellSx : TH;
+  const bodyCellSx = readOnly ? qcReadOnlyBodyCellSx : cellSx;
+  const inputsDisabled = disabled || readOnly;
+  const groups = groupQcPropellantBemColumns(columns);
+  const sectionId = QC_PROPELLANT_SECTION_IDS.BALLISTIC_EVALUATION;
+
+  const updateCell = (index: number, field: string, value: string) => {
+    onRowsChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
+  };
+
+  return (
+    <Box>
+      <TableContainer
+        sx={
+          readOnly
+            ? qcReadOnlyTableContainerSx
+            : {
+                overflow: "hidden",
+                overflowX: "auto",
+                border: `1px solid ${TABLE_BORDER}`,
+                borderRadius: 2,
+                background: "#fff",
+              }
+        }
+      >
+        <Table size="small" sx={{ minWidth: 640, borderCollapse: "collapse" }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ ...headerSx, verticalAlign: "middle" }} rowSpan={2}>
+                Details / Mix
+              </TableCell>
+              <TableCell sx={{ ...headerSx, verticalAlign: "middle" }} rowSpan={2}>
+                <FieldLabelWithAsterisk
+                  label="Spec."
+                  required
+                  sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                />
+              </TableCell>
+              {groups.map((group) => (
+                <TableCell
+                  key={`fm-group-${group.fmIndex}`}
+                  sx={{ ...headerSx, textAlign: "left", minWidth: 168 }}
+                  colSpan={group.columnIds.length}
+                >
+                  <Stack
+                    direction="row"
+                    alignItems="center"
+                    justifyContent="space-between"
+                    gap={1.5}
+                    sx={{ width: "100%" }}
+                  >
+                    <Box component="span">FM-{group.fmIndex}</Box>
+                    {readOnly ? null : (
+                      <Button
+                        size="small"
+                        startIcon={<AddRoundedIcon sx={{ fontSize: 14 }} />}
+                        onClick={() => onAddBem(group.fmIndex)}
+                        disabled={inputsDisabled}
+                        sx={{
+                          color: "#fff",
+                          textTransform: "none",
+                          minWidth: 0,
+                          ml: "auto",
+                          px: 0.75,
+                          py: 0,
+                          fontSize: "0.65rem",
+                          fontWeight: 700,
+                          borderColor: alpha("#fff", 0.45),
+                          flexShrink: 0,
+                        }}
+                        variant="outlined"
+                      >
+                        Add BEM
+                      </Button>
+                    )}
+                  </Stack>
+                </TableCell>
+              ))}
+              <TableCell sx={{ ...headerSx, verticalAlign: "middle" }} rowSpan={2}>
+                QA Remarks
+              </TableCell>
+            </TableRow>
+            <TableRow>
+              {groups.flatMap((group) =>
+                group.columnIds.map((columnId) => (
+                  <TableCell key={columnId} sx={headerSx}>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between" gap={0.5}>
+                      <FieldLabelWithAsterisk
+                        label={getQcPropellantBemSubLabel(columnId)}
+                        required
+                        sx={{ display: "inline", fontSize: "inherit", fontWeight: "inherit", color: "inherit", mb: 0 }}
+                      />
+                      {!readOnly && group.columnIds.length > 1 ? (
+                        <IconButton
+                          size="small"
+                          onClick={() => onRemoveBem(columnId)}
+                          disabled={inputsDisabled}
+                          sx={{ color: "#fff", p: 0.25 }}
+                          aria-label={`Remove ${getQcPropellantFmColumnLabel(columnId)}`}
+                        >
+                          <DeleteOutlineRoundedIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      ) : null}
+                    </Stack>
+                  </TableCell>
+                )),
+              )}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow
+                key={`ballistic-${index}-${row.DETAILS}`}
+                sx={{
+                  background: readOnly
+                    ? index % 2 === 1
+                      ? alpha(BRAND.primary, 0.03)
+                      : "#fff"
+                    : index % 2 === 0
+                      ? "#fff"
+                      : alpha(BRAND.surface, 0.55),
+                }}
+              >
+                <TableCell sx={bodyCellSx}>
+                  {readOnly ? <QCDivisionReadOnlyValue value={row.DETAILS} /> : row.DETAILS}
+                </TableCell>
+                <TableCell sx={bodyCellSx}>
+                  {(() => {
+                    const path = `${sectionId}.${index}.SPECIFICATION`;
+                    const message = fieldError(validationErrors ?? undefined, path);
+                    return (
+                      <>
+                        <CellInput
+                          value={String(row.SPECIFICATION ?? "")}
+                          onChange={(value) => updateCell(index, "SPECIFICATION", value)}
+                          disabled={inputsDisabled}
+                          readOnly={readOnly}
+                          fieldPath={path}
+                          error={Boolean(message)}
+                        />
+                        {!readOnly ? <FieldErrorText message={message} /> : null}
+                      </>
+                    );
+                  })()}
+                </TableCell>
+                {columns.map((columnId) => {
+                  const path = `${sectionId}.${index}.${columnId}`;
+                  const message = fieldError(validationErrors ?? undefined, path);
+                  return (
+                    <TableCell key={columnId} sx={bodyCellSx}>
+                      <CellInput
+                        value={String(row[columnId] ?? "")}
+                        onChange={(value) => updateCell(index, columnId, value)}
+                        disabled={inputsDisabled}
+                        readOnly={readOnly}
+                        fieldPath={path}
+                        error={Boolean(message)}
+                      />
+                      {!readOnly ? <FieldErrorText message={message} /> : null}
+                    </TableCell>
+                  );
+                })}
+                <TableCell sx={bodyCellSx}>
+                  {(() => {
+                    const path = `${sectionId}.${index}.QA_REMARKS`;
+                    const message = fieldError(validationErrors ?? undefined, path);
+                    return (
+                      <>
+                        <CellInput
+                          value={String(row.QA_REMARKS ?? "")}
+                          onChange={(value) => updateCell(index, "QA_REMARKS", value)}
+                          disabled={inputsDisabled}
+                          readOnly={readOnly}
+                          multiline
+                          fieldPath={path}
+                          error={Boolean(message)}
+                        />
+                        {!readOnly ? <FieldErrorText message={message} /> : null}
+                      </>
+                    );
+                  })()}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+};
+
+type QCPropellantMotorPanelProps = {
+  motorId?: string | null;
+  values: SchemaFormValues;
+  onChange: (
+    values: SchemaFormValues | ((prev: SchemaFormValues) => SchemaFormValues),
+  ) => void;
+  readOnly?: boolean;
+  disabled?: boolean;
+  headerActions?: ReactNode;
+  batchPayload?: unknown;
+  validationErrors?: Record<string, string> | null;
+};
+
+const QCPropellantMotorPanel = ({
+  motorId,
+  values,
+  onChange,
+  readOnly = false,
+  disabled = false,
+  headerActions,
+  batchPayload = null,
+  validationErrors = null,
+}: QCPropellantMotorPanelProps) => {
+  const inputsDisabled = disabled || readOnly;
+  const premixFmCount = resolveQcPropellantPremixCount(batchPayload);
+  const savedFmCount = Math.max(
+    getPropellantFmColumns(values, QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES).length,
+    getPropellantFmColumns(values, QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES).length,
+    getPropellantFmColumns(values, QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE).length,
+    getPropellantBallisticColumns(values).reduce((max, columnId) => {
+      const match = String(columnId).match(/^FM_(\d+)/i);
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0),
+  );
+  const fmCount = Math.max(premixFmCount, savedFmCount, 1);
+
+  const patchValues = useCallback(
+    (updater: (prev: SchemaFormValues) => SchemaFormValues) => {
+      onChange((prev) => updater(prev ?? {}));
+    },
+    [onChange],
+  );
+
+  useEffect(() => {
+    if (readOnly) return;
+    const current = getPropellantFmColumns(values, QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES)
+      .length;
+    if (current >= fmCount) return;
+    patchValues((prev) => syncPropellantFmColumns(prev, fmCount));
+  }, [fmCount, patchValues, readOnly, values]);
+
+  const patchPropertyRows = useCallback(
+    (sectionId: string, rows: QcPropellantPropertyRow[]) => {
+      patchValues((prev) => setPropellantPropertyRows(prev, sectionId, rows));
+    },
+    [patchValues],
+  );
+
+  const patchRowFiles = useCallback(
+    (sectionId: string, rowIndex: number, next: FileRef[]) => {
+      patchValues((prev) => {
+        const currentRows = getPropellantPropertyRows(prev, sectionId);
+        return setPropellantPropertyRows(
+          prev,
+          sectionId,
+          currentRows.map((row, index) =>
+            index === rowIndex
+              ? {
+                  ...row,
+                  [QC_PROPELLANT_ROW_UPLOAD_FIELD]: next,
+                }
+              : row,
+          ),
+        );
+      });
+    },
+    [patchValues],
+  );
+
+  const patchMechanicalGraph = useCallback(
+    (next: FileRef[]) => {
+      patchValues((prev) => setPropellantMechanicalGraph(prev, next));
+    },
+    [patchValues],
+  );
+
+  const mechanicalRows = useMemo(
+    () => getPropellantPropertyRows(values, QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES, fmCount),
+    [fmCount, values],
+  );
+  const interfaceRows = useMemo(
+    () => getPropellantPropertyRows(values, QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES, fmCount),
+    [fmCount, values],
+  );
+  const ssbrRows = useMemo(
+    () => getPropellantPropertyRows(values, QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE, fmCount),
+    [fmCount, values],
+  );
+  const ballisticRows = useMemo(() => getPropellantBallisticRows(values, fmCount), [fmCount, values]);
+  const mechanicalColumns = getPropellantFmColumns(
+    values,
+    QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES,
+    false,
+    fmCount,
+  );
+  const interfaceColumns = getPropellantFmColumns(
+    values,
+    QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES,
+    false,
+    fmCount,
+  );
+  const ssbrColumns = getPropellantFmColumns(
+    values,
+    QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE,
+    false,
+    fmCount,
+  );
+  const ballisticColumns = getPropellantBallisticColumns(values, fmCount);
+  const mechanicalGraph = getPropellantMechanicalGraph(values);
+
+  return (
+    <Box
+      sx={{
+        borderRadius: 2.5,
+        border: `1px solid ${BRAND.border}`,
+        background: BRAND.surface,
+        px: 1.5,
+        py: 1.25,
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.25} gap={1}>
+        <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+          {getQcPropellantMotorLabel(motorId)}
+        </Typography>
+        {headerActions}
+      </Stack>
+      <Stack spacing={1.5}>
+        <SectionCard title={QC_PROPELLANT_SECTION_TITLES.MECHANICAL_PROPERTIES} readOnly={readOnly}>
+          <Stack spacing={1.5}>
+            <PropertyTable
+              sectionId={QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES}
+              rows={mechanicalRows}
+              columns={mechanicalColumns}
+              onRowsChange={(rows) =>
+                patchPropertyRows(QC_PROPELLANT_SECTION_IDS.MECHANICAL_PROPERTIES, rows)
+              }
+              readOnly={readOnly}
+              disabled={inputsDisabled}
+              includeSampleNo
+              includeRowStats
+              validationErrors={validationErrors}
+            />
+            <Box>
+              <Typography sx={{ fontSize: "0.72rem", fontWeight: 700, color: BRAND.primary, mb: 0.75 }}>
+                Upload Graph
+              </Typography>
+              <Box sx={{ minWidth: 220, maxWidth: 480 }}>
+                <QCDivisionFileField
+                  files={mechanicalGraph}
+                  onChange={patchMechanicalGraph}
+                  disabled={inputsDisabled}
+                  readOnly={readOnly}
+                  multiple
+                  acceptMode="imageVideoPdf"
+                  emptyLabel="Upload Graph"
+                />
+              </Box>
+            </Box>
+          </Stack>
+        </SectionCard>
+        <SectionCard title={QC_PROPELLANT_SECTION_TITLES.INTERFACE_PROPERTIES} readOnly={readOnly}>
+          <PropertyTable
+            sectionId={QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES}
+            rows={interfaceRows}
+            columns={interfaceColumns}
+            onRowsChange={(rows) =>
+              patchPropertyRows(QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES, rows)
+            }
+            onRowFilesChange={(rowIndex, next) =>
+              patchRowFiles(QC_PROPELLANT_SECTION_IDS.INTERFACE_PROPERTIES, rowIndex, next)
+            }
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            includeSampleNo
+            includeRowStats
+            includeRowUpload
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+        <SectionCard title={QC_PROPELLANT_SECTION_TITLES.SSBR_UBR_BURN_RATE} readOnly={readOnly}>
+          <PropertyTable
+            sectionId={QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE}
+            rows={ssbrRows}
+            columns={ssbrColumns}
+            onRowsChange={(rows) =>
+              patchPropertyRows(QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE, rows)
+            }
+            onRowFilesChange={(rowIndex, next) =>
+              patchRowFiles(QC_PROPELLANT_SECTION_IDS.SSBR_UBR_BURN_RATE, rowIndex, next)
+            }
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            includeRowStats
+            includeRowUpload
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+        <SectionCard title={QC_PROPELLANT_SECTION_TITLES.BALLISTIC_EVALUATION} readOnly={readOnly}>
+          <BallisticTable
+            rows={ballisticRows}
+            columns={ballisticColumns}
+            onRowsChange={(rows) => patchValues((prev) => setPropellantBallisticRows(prev, rows))}
+            onAddBem={(fmIndex) =>
+              patchValues((prev) => addPropellantBemColumn(prev, fmIndex, fmCount))
+            }
+            onRemoveBem={(columnId) =>
+              patchValues((prev) => removePropellantBemColumn(prev, columnId, fmCount))
+            }
+            readOnly={readOnly}
+            disabled={inputsDisabled}
+            validationErrors={validationErrors}
+          />
+        </SectionCard>
+      </Stack>
+    </Box>
+  );
+};
+
+export default QCPropellantMotorPanel;

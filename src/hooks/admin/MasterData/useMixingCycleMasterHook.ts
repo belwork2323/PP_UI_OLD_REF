@@ -1,0 +1,269 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMasterDataActiveToggle } from "@hooks/admin/MasterData/useMasterDataActiveToggle";
+import { useAlertStore } from "@app/store/alertStore";
+import { STRINGS } from "@app/config/strings";
+import { ApiResponseModel } from "@data/models/common/ApiResponseModel";
+import { getMasterDataErrorMessage } from "@data/models/admin/MasterData/MasterDataModel";
+import {
+  buildMixingCycleCreatePayload,
+  buildMixingCycleDeletePayload,
+  buildMixingCycleUpdatePayload,
+  createEmptyMixingCycleForm,
+  emptyMasterDataStats,
+  mapMixingRecordToForm,
+  MixingCycleListModel,
+  validateMixingCycleForm,
+  type MixingCycleFormState,
+  type MixingCycleListPayload,
+  type MixingCycleRecord,
+} from "@data/models/admin/MasterData/MixingCycleMasterModel";
+import {
+  createMixingCycleMaster,
+  deleteMixingCycleMaster,
+  enableMixingCycleMaster,
+  fetchMixingCycleMasterList,
+  updateMixingCycleMaster,
+} from "@data/api/admin/MasterData/mixingCycleMasterApi";
+
+const S = STRINGS.MASTER_DATA;
+
+type Options = {
+  activeFilter: "ALL" | "ACTIVE" | "INACTIVE";
+  refreshKey?: number;
+  onListPayloadChange?: (payload: MixingCycleListPayload | null) => void;
+  onStatsChange?: (stats: { total: number; active: number; inactive: number }) => void;
+};
+
+export default function useMixingCycleMasterHook({
+  activeFilter,
+  refreshKey = 0,
+  onListPayloadChange,
+  onStatsChange,
+}: Options) {
+  const onListPayloadChangeRef = useRef(onListPayloadChange);
+  const onStatsChangeRef = useRef(onStatsChange);
+  onListPayloadChangeRef.current = onListPayloadChange;
+  onStatsChangeRef.current = onStatsChange;
+
+  const [items, setItems] = useState<MixingCycleRecord[]>([]);
+  const [listPayload, setListPayload] = useState<MixingCycleListPayload | null>(null);
+  const [stats, setStats] = useState(emptyMasterDataStats());
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [motorStageFilter, setMotorStageFilter] = useState("");
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
+  const [inlineMode, setInlineMode] = useState<"create" | "edit" | null>(null);
+  const [form, setForm] = useState<MixingCycleFormState>(createEmptyMixingCycleForm());
+  const [saving, setSaving] = useState(false);
+  const [disabling, setDisabling] = useState(false);
+  const [enabling, setEnabling] = useState(false);
+
+  const loadList = useCallback(async () => {
+    setLoading(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (search.trim()) body.search = search.trim();
+      if (activeFilter === "ACTIVE") body.isActive = true;
+      if (activeFilter === "INACTIVE") body.isActive = false;
+      if (projectFilter) body.projectId = projectFilter;
+      if (motorStageFilter) body.motorStage = Number(motorStageFilter);
+      const resp = new ApiResponseModel(await fetchMixingCycleMasterList(body), MixingCycleListModel.fromApi);
+      if (resp.success && resp.data) {
+        setListPayload(resp.data);
+        setItems(resp.data.items);
+        setStats(resp.data.stats);
+        onListPayloadChangeRef.current?.(resp.data);
+        onStatsChangeRef.current?.(resp.data.stats);
+      } else {
+        setListPayload(null);
+        setItems([]);
+        setStats(emptyMasterDataStats());
+        onListPayloadChangeRef.current?.(null);
+        onStatsChangeRef.current?.(emptyMasterDataStats());
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.LOAD_LIST_FAILED), "error");
+      }
+    } catch (err: any) {
+      setListPayload(null);
+      setItems([]);
+      setStats(emptyMasterDataStats());
+      onListPayloadChangeRef.current?.(null);
+      onStatsChangeRef.current?.(emptyMasterDataStats());
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(err?.response?.data, S.ERRORS.LOAD_LIST_FAILED), "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [activeFilter, motorStageFilter, projectFilter, search]);
+
+  useEffect(() => {
+    setPage(0);
+    setInlineMode(null);
+    void loadList();
+  }, [loadList, refreshKey]);
+
+  const paginated = useMemo(() => {
+    const start = page * rowsPerPage;
+    return items.slice(start, start + rowsPerPage);
+  }, [items, page, rowsPerPage]);
+
+  const closeInline = () => {
+    if (saving) return;
+    setInlineMode(null);
+    setForm(createEmptyMixingCycleForm());
+  };
+
+  const openCreate = () => {
+    setForm(createEmptyMixingCycleForm());
+    setInlineMode("create");
+  };
+
+  const openEdit = (record: MixingCycleRecord) => {
+    setForm(mapMixingRecordToForm(record));
+    setInlineMode("edit");
+  };
+
+  const saveForm = async () => {
+    const isEdit = inlineMode === "edit";
+    const err = validateMixingCycleForm(form, isEdit, items);
+    if (err) {
+      useAlertStore.getState().showValidationAlert(err);
+      return;
+    }
+    setSaving(true);
+    useAlertStore
+      .getState()
+      .showAlert(isEdit ? S.MESSAGES.UPDATING : S.MESSAGES.CREATING, "info", { loading: true });
+    try {
+      const raw = isEdit
+        ? await updateMixingCycleMaster(buildMixingCycleUpdatePayload(form))
+        : await createMixingCycleMaster(buildMixingCycleCreatePayload(form));
+      const resp = new ApiResponseModel(raw);
+      if (resp.success) {
+        useAlertStore
+          .getState()
+          .showAlert(isEdit ? S.MESSAGES.UPDATE_SUCCESS : S.MESSAGES.CREATE_SUCCESS, "success");
+        setInlineMode(null);
+        setForm(createEmptyMixingCycleForm());
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const enableRecord = useCallback(async (record: MixingCycleRecord) => {
+    setEnabling(true);
+    useAlertStore.getState().showAlert(S.MESSAGES.ENABLING, "info", { loading: true });
+    try {
+      const resp = new ApiResponseModel(
+        await enableMixingCycleMaster(buildMixingCycleDeletePayload(record.id)),
+      );
+      if (resp.success) {
+        useAlertStore.getState().showAlert(S.MESSAGES.ENABLE_SUCCESS, "success");
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setEnabling(false);
+    }
+  }, [loadList]);
+
+  const disableRecord = useCallback(async (record: MixingCycleRecord) => {
+    setDisabling(true);
+    useAlertStore.getState().showAlert(S.MESSAGES.DISABLING, "info", { loading: true });
+    try {
+      const resp = new ApiResponseModel(
+        await deleteMixingCycleMaster(buildMixingCycleDeletePayload(record.id)),
+      );
+      if (resp.success) {
+        useAlertStore.getState().showAlert(S.MESSAGES.DISABLE_SUCCESS, "success");
+        await loadList();
+      } else {
+        useAlertStore.getState().showAlert(getMasterDataErrorMessage(resp, S.ERRORS.OPERATION_FAILED), "error");
+      }
+    } catch (e: any) {
+      useAlertStore
+        .getState()
+        .showAlert(getMasterDataErrorMessage(e?.response?.data, S.ERRORS.OPERATION_FAILED), "error");
+    } finally {
+      setDisabling(false);
+    }
+  }, [loadList]);
+
+  const canToggle = useCallback(
+    () => inlineMode == null && !saving && !disabling && !enabling,
+    [inlineMode, saving, disabling, enabling],
+  );
+
+  const {
+    toggleTarget,
+    handleToggleActive,
+    confirmToggle,
+    cancelToggle,
+  } = useMasterDataActiveToggle({
+    canToggle,
+    enableRecord,
+    disableRecord,
+  });
+
+  return {
+    items,
+    paginated,
+    listPayload,
+    stats,
+    loading,
+    search,
+    setSearch: (v: string) => {
+      setSearch(v);
+      setPage(0);
+    },
+    projectFilter,
+    setProjectFilter: (v: string) => {
+      setProjectFilter(v);
+      setMotorStageFilter("");
+      setPage(0);
+    },
+    motorStageFilter,
+    setMotorStageFilter: (v: string) => {
+      setMotorStageFilter(v);
+      setPage(0);
+    },
+    page,
+    setPage,
+    rowsPerPage,
+    setRowsPerPage: (n: number) => {
+      setRowsPerPage(n);
+      setPage(0);
+    },
+    inlineMode,
+    form,
+    setForm,
+    saving,
+    openCreate,
+    openEdit,
+    closeInline,
+    saveForm,
+    toggleTarget,
+    disabling,
+    enabling,
+    handleToggleActive,
+    confirmToggle,
+    cancelToggle,
+    refresh: loadList,
+  };
+}

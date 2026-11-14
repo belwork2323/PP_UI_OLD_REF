@@ -1,0 +1,182 @@
+import type { RmpMaterialUiKey } from "./rmpMaterialUiRegistry";
+import {
+  createEmptyApCoarseProcessForm,
+  apCoarseFormHasUserData,
+  type ApCoarseProcessForm,
+} from "./apCoarseProcessForm";
+import {
+  createEmptyApFineProcessForm,
+  apFineFormHasUserData,
+  type ApFineProcessForm,
+} from "./apFineProcessForm";
+import {
+  createEmptyApUltraFineProcessForm,
+  apUltraFineFormHasUserData,
+  type ApUltraFineProcessForm,
+} from "./apUltraFineProcessForm";
+import {
+  createEmptyAluminumProcessForm,
+  aluminumFormHasUserData,
+  type AluminumProcessForm,
+} from "./aluminumProcessForm";
+import {
+  createEmptyDoaProcessForm,
+  doaFormHasUserData,
+  type DoaProcessForm,
+  type LiquidDispatchUiKey,
+} from "./doaProcessForm";
+import {
+  createEmptyCcProcessForm,
+  ccFormHasUserData,
+  type CcProcessForm,
+  type CcIoUiKey,
+} from "./ccProcessForm";
+import {
+  createEmptyNonoxDProcessForm,
+  nonoxDFormHasUserData,
+  type NonoxDProcessForm,
+} from "./nonoxDProcessForm";
+import {
+  createEmptyLotDetailRow,
+  lotDetailsHaveUserData,
+  sumLotDetailQuantities,
+  type LotDetailFormRow,
+} from "./lotDetailForm";
+
+export type { LotDetailFormRow };
+export { createEmptyLotDetailRow, lotDetailsHaveUserData, sumLotDetailQuantities };
+
+export type DryingTrayOvenForm = {
+  ovenType: string;
+  ovenNumber: string;
+  ovenSetTemperature: string;
+  startDatetime: string;
+  endDatetime: string;
+  moisture: string;
+  observation: string;
+  qaRemarks: string;
+};
+
+export type SievingForm = {
+  sievingDispatchDatetime: string;
+  sievedQuantity: string;
+  sieveMeshSize: string;
+  observation: string;
+  qaRemarks: string;
+};
+
+export type DefaultSolidProcessForm = {
+  uiKey: "defaultSolid";
+  lotDetails: LotDetailFormRow[];
+  lotDetailsQaRemarks: string;
+  drying: DryingTrayOvenForm;
+  sieving: SievingForm;
+};
+
+export type DefaultLiquidProcessForm = {
+  uiKey: "defaultLiquid";
+  lotDetails: LotDetailFormRow[];
+  lotDetailsQaRemarks: string;
+  qaRemarks: string;
+};
+
+export type RmpMaterialProcessForm =
+  | DefaultSolidProcessForm
+  | DefaultLiquidProcessForm
+  | ApCoarseProcessForm
+  | ApFineProcessForm
+  | ApUltraFineProcessForm
+  | AluminumProcessForm
+  | DoaProcessForm
+  | CcProcessForm
+  | NonoxDProcessForm;
+
+export const createEmptyDryingTrayOvenForm = (): DryingTrayOvenForm => ({
+  ovenType: "",
+  ovenNumber: "",
+  ovenSetTemperature: "",
+  startDatetime: "",
+  endDatetime: "",
+  moisture: "",
+  observation: "",
+  qaRemarks: "",
+});
+
+export const createEmptySievingForm = (): SievingForm => ({
+  sievingDispatchDatetime: "",
+  sievedQuantity: "",
+  sieveMeshSize: "",
+  observation: "",
+  qaRemarks: "",
+});
+
+export const createEmptyDefaultSolidProcessForm = (): DefaultSolidProcessForm => ({
+  uiKey: "defaultSolid",
+  lotDetails: [createEmptyLotDetailRow()],
+  lotDetailsQaRemarks: "",
+  drying: createEmptyDryingTrayOvenForm(),
+  sieving: createEmptySievingForm(),
+});
+
+export const createEmptyDefaultLiquidProcessForm = (): DefaultLiquidProcessForm => ({
+  uiKey: "defaultLiquid",
+  lotDetails: [createEmptyLotDetailRow()],
+  lotDetailsQaRemarks: "",
+  qaRemarks: "",
+});
+
+export const createEmptyProcessFormForUiKey = (uiKey: RmpMaterialUiKey): RmpMaterialProcessForm => {
+  if (uiKey === "apCoarse") return createEmptyApCoarseProcessForm();
+  if (uiKey === "apFine") return createEmptyApFineProcessForm();
+  if (uiKey === "apUltraFine") return createEmptyApUltraFineProcessForm();
+  if (uiKey === "aluminum") return createEmptyAluminumProcessForm();
+  if (uiKey === "doa" || uiKey === "htpb" || uiKey === "tdi") {
+    return createEmptyDoaProcessForm(uiKey as LiquidDispatchUiKey);
+  }
+  if (uiKey === "cc" || uiKey === "io") {
+    return createEmptyCcProcessForm(uiKey as CcIoUiKey);
+  }
+  if (uiKey === "nonoxD") return createEmptyNonoxDProcessForm();
+  if (uiKey === "defaultLiquid") return createEmptyDefaultLiquidProcessForm();
+  return createEmptyDefaultSolidProcessForm();
+};
+
+/** Keep lot rows when the slot uiKey and form.uiKey have drifted (legacy defaultSolid on AP). */
+export const ensureProcessFormMatchesUiKey = (
+  uiKey: RmpMaterialUiKey,
+  form: RmpMaterialProcessForm | null | undefined,
+): RmpMaterialProcessForm => {
+  if (form && form.uiKey === uiKey) return form;
+  const next = createEmptyProcessFormForUiKey(uiKey);
+  const lots = form?.lotDetails?.length ? form.lotDetails : next.lotDetails;
+  const lotDetailsQaRemarks =
+    form && "lotDetailsQaRemarks" in form
+      ? String((form as { lotDetailsQaRemarks?: string }).lotDetailsQaRemarks ?? "")
+      : next.lotDetailsQaRemarks;
+  return { ...next, lotDetails: lots, lotDetailsQaRemarks };
+};
+
+const str = (v: unknown) => (v == null ? "" : String(v)).trim();
+
+export const defaultSolidFormHasUserData = (form: DefaultSolidProcessForm): boolean => {
+  const dryingValues = Object.values(form.drying).some((v) => str(v));
+  const sievingValues = Object.values(form.sieving).some((v) => str(v));
+  return lotDetailsHaveUserData(form.lotDetails) || dryingValues || sievingValues;
+};
+
+export const defaultLiquidFormHasUserData = (form: DefaultLiquidProcessForm): boolean =>
+  lotDetailsHaveUserData(form.lotDetails);
+
+export const processFormHasUserData = (form: RmpMaterialProcessForm): boolean => {
+  if (form.uiKey === "defaultLiquid") return defaultLiquidFormHasUserData(form);
+  if (form.uiKey === "apCoarse") return apCoarseFormHasUserData(form);
+  if (form.uiKey === "apFine") return apFineFormHasUserData(form);
+  if (form.uiKey === "apUltraFine") return apUltraFineFormHasUserData(form);
+  if (form.uiKey === "aluminum") return aluminumFormHasUserData(form);
+  if (form.uiKey === "doa" || form.uiKey === "htpb" || form.uiKey === "tdi") {
+    return doaFormHasUserData(form);
+  }
+  if (form.uiKey === "cc" || form.uiKey === "io") return ccFormHasUserData(form);
+  if (form.uiKey === "nonoxD") return nonoxDFormHasUserData(form);
+  return defaultSolidFormHasUserData(form);
+};

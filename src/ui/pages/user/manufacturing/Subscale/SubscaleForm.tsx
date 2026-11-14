@@ -1,0 +1,184 @@
+import React, { useEffect } from "react";
+import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
+import SubmitForApprovalButton from "../../../../components/common/SubmitForApprovalButton";
+import { icons } from "../../../../../app/theme/icons";
+import { STRINGS } from "../../../../../app/config/strings";
+import { SUBSCALE_BRAND } from "../../../../../app/theme/custom_themes/user/manufacturing/subscale_theme";
+import type { SubscaleFormState } from "../../../../../data/models/user/SubscaleFormModel";
+import { focusSubscaleField } from "@/data/validation/adapters/subscale.validation";
+import {
+  getSubscaleProcessingLabel,
+  isMainScaleSubscaleBatch,
+} from "../../../../../hooks/user/manufacturing/subscaleHardwareConfig";
+import SubscaleSchemaPanel from "./SubscaleSchemaPanel";
+
+const S = STRINGS.MANUFACTURING.SUBSCALE;
+const { scale: ScaleRoundedIcon } = icons.user.manufacturing.subscale.form;
+
+type SubscaleFormProps = {
+  batch?: {
+    batchId?: string;
+    articleId?: string;
+    batchType?: string | null;
+    ssStatus?: string;
+    status?: string;
+  } | null;
+  formData: SubscaleFormState;
+  subDepartmentId?: number;
+  schemaLoading?: boolean;
+  schemaError?: string | null;
+  onFormValuesChange: (
+    values: import("@/data/models/shared/sectionFormTypes").SchemaFormValues,
+  ) => void;
+  theme: any;
+  batchDetails: any;
+  actionLoading?: boolean;
+  isEditMode?: boolean;
+  onRequestSaveDraft?: () => void;
+  onRequestSubmit?: () => void;
+  errors?: Record<string, string>;
+  clearFieldError?: (path: string) => void;
+  validationFocusRequest?: { id: number; fieldPath: string | null } | null;
+};
+
+const SubscaleForm = ({
+  batch,
+  formData,
+  subDepartmentId,
+  onFormValuesChange,
+  theme,
+  batchDetails,
+  actionLoading,
+  isEditMode,
+  onRequestSaveDraft,
+  errors,
+  clearFieldError,
+  validationFocusRequest = null,
+}: SubscaleFormProps) => {
+  const BRAND = SUBSCALE_BRAND;
+  const isMainScale = isMainScaleSubscaleBatch(batch?.batchType);
+  const processingLabel = getSubscaleProcessingLabel(batch?.batchType);
+  const isFormLoaded = Boolean(formData.schemaFormValues?.IS_PROCESS_FORM_LOADED);
+  const batchStatus = batch?.ssStatus ?? batch?.status;
+
+  // Retry focus after section expand / lazy-mount (Case Prep–style scroll + highlight).
+  useEffect(() => {
+    if (!validationFocusRequest?.id || !validationFocusRequest.fieldPath) return;
+    const path = validationFocusRequest.fieldPath;
+    const timers = [50, 150, 350].map((delay) =>
+      window.setTimeout(() => {
+        focusSubscaleField(path);
+      }, delay),
+    );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [validationFocusRequest?.id, validationFocusRequest?.fieldPath]);
+
+  return (
+    <Box>
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${theme.palette.border}`,
+          background: `linear-gradient(135deg, ${BRAND.surface} 0%, #fff 100%)`,
+          px: 2,
+          py: 1.75,
+          mb: 2.5,
+        }}
+      >
+        <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ sm: "center" }} gap={1.5}>
+          <Stack direction="row" alignItems="center" gap={1.5} flex={1}>
+            <Box
+              sx={{
+                width: 40,
+                height: 40,
+                borderRadius: "12px",
+                background: `linear-gradient(135deg,${BRAND.ss},${BRAND.ssLight})`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: `0 4px 14px ${BRAND.ss}40`,
+              }}
+            >
+              <ScaleRoundedIcon sx={{ color: "#fff", fontSize: 20 }} />
+            </Box>
+            <Box>
+              <Typography sx={{ fontWeight: 700, fontSize: "0.95rem", color: BRAND.text }}>
+                {S.FORM_TITLE}
+              </Typography>
+              <Typography sx={{ fontSize: "0.78rem", color: BRAND.textSub, mt: 0.2 }}>
+                {processingLabel}
+                {batch?.batchId ? ` · ${batch.batchId}` : ""}
+              </Typography>
+            </Box>
+          </Stack>
+          <Chip
+            label={processingLabel}
+            size="small"
+            sx={{
+              height: 26,
+              fontWeight: 700,
+              fontSize: "0.72rem",
+              alignSelf: { xs: "flex-start", sm: "center" },
+              background: "rgba(21,101,192,0.1)",
+              color: isMainScale ? BRAND.primary : BRAND.ss,
+              border: `1px solid ${isMainScale ? `${BRAND.primaryLight}44` : `${BRAND.ss}44`}`,
+            }}
+          />
+        </Stack>
+      </Box>
+
+      {isFormLoaded && onRequestSaveDraft ? (
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          gap={1.25}
+          justifyContent="flex-end"
+          sx={{ mb: 2.5 }}
+        >
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={actionLoading}
+            onClick={onRequestSaveDraft}
+            startIcon={actionLoading ? <CircularProgress size={14} color="inherit" /> : undefined}
+            sx={{ whiteSpace: "nowrap" }}
+            type="button"
+          >
+            {S.HARDWARE.SAVE_DRAFT}
+          </Button>
+          <SubmitForApprovalButton
+            disabled={actionLoading}
+            type="submit"
+            label={isEditMode ? S.HARDWARE.RESUBMIT : S.HARDWARE.SUBMIT}
+          />
+        </Stack>
+      ) : null}
+
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${theme.palette.border}`,
+          background: theme.palette.surface,
+          px: { xs: 1, sm: 1.5 },
+          py: 1.5,
+        }}
+      >
+        <SubscaleSchemaPanel
+          schema={formData.subscaleSchema}
+          formValues={formData.schemaFormValues ?? {}}
+          savedSections={formData.savedSections}
+          subDepartmentId={subDepartmentId}
+          batchId={batch?.batchId}
+          batchType={batch?.batchType}
+          batchStatus={batchStatus}
+          onChange={onFormValuesChange}
+          batchDetails={batchDetails}
+          errors={errors}
+          clearFieldError={clearFieldError}
+          validationFocusPath={validationFocusRequest?.fieldPath ?? null}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+export default SubscaleForm;

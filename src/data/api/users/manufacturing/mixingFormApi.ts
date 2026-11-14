@@ -1,0 +1,34 @@
+import { post, put } from "../../httpClient";
+import { ADMIN_ENDPOINTS, SYSTEM, USER_MIXING_FORM_ENDPOINTS } from "../../endPoints";
+
+export const createMixingFormApi = async (payload: any) => {
+  return await post(USER_MIXING_FORM_ENDPOINTS.CREATE_FORM, payload);
+};
+
+export const fetchMixingFormDetailsApi = async (payload: {
+  formId: string;
+  subDepartmentId: number;
+}) => {
+  return await post(USER_MIXING_FORM_ENDPOINTS.FORM_DETAILS, payload);
+};
+
+export const updateMixingFormApi = async (payload: any) => {
+  return await put(USER_MIXING_FORM_ENDPOINTS.UPDATE_FORM, payload);
+};
+
+export const fetchQualityCheck = async (
+  mixType: string,
+  motorStage: number,
+  mixingCycleCode?: string,
+) => {
+  const payload: Record<string, unknown> = { mixType, motorStage };
+  const code = String(mixingCycleCode ?? "").trim();
+  if (code) payload.mixingCycleCode = code;
+  return await post(SYSTEM.GET_QUALITY_CHECKS, payload);
+};
+export const fetchMixingCycle = async (projectId: string, motorStage: number) => {
+  return await post(SYSTEM.MIXING_CYCLES_BY_PROJECTID, {
+    projectId,
+    motorStage,
+  });
+};

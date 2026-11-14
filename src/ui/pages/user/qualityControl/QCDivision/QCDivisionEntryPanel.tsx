@@ -1,0 +1,943 @@
+import { memo, useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { Box, Button, Stack, Typography, alpha } from "@mui/material";
+import type { QcDivisionEntry, QcDivisionEntryValues } from "../../../../../data/models/user/QualityControlFormModel";
+import { createQcInitialValues } from "@/data/models/user/qc/qcApiTypes";
+import type { SchemaDocumentV2, SchemaFormValues } from "@/data/models/shared/sectionFormTypes";
+import { QC_DIVISION_BRAND } from "../../../../../app/theme/custom_themes/user/qualityControl/tokens";
+import { STRINGS } from "../../../../../app/config/strings";
+import RemoveProcessButton from "../../../../components/common/RemoveProcessButton";
+import SubmitForApprovalButton from "../../../../components/common/SubmitForApprovalButton";
+import QCSchemaBufferingLoader from "./QCSchemaBufferingLoader";
+import QCDivisionSavedSectionsDisplay from "./components/QCDivisionSavedSectionsDisplay";
+import QCRawMaterialRevalidationTable from "./QCRawMaterialRevalidationTable";
+import QCMixingDetailsTable from "./QCMixingDetailsTable";
+import QCMixingViscosityTable from "./QCMixingViscosityTable";
+import QCHardwareProcessPanel from "./QCHardwareProcessPanel";
+import QCCastingMotorPanel from "./QCCastingMotorPanel";
+import QCCuringMotorPanel from "./QCCuringMotorPanel";
+import QCDeCoringMotorPanel from "./QCDeCoringMotorPanel";
+import QCTrimmingMotorPanel from "./QCTrimmingMotorPanel";
+import QCPostCureMotorPanel from "./QCPostCureMotorPanel";
+import QCNdtMotorPanel from "./QCNdtMotorPanel";
+import QCPropellantMotorPanel from "./QCPropellantMotorPanel";
+import QCWeighmentMotorPanel from "./QCWeighmentMotorPanel";
+import QCStfMotorPanel from "./QCStfMotorPanel";
+import {
+  applyMixingDivisionEntryToValues,
+  createInitialPremixDetailsValues,
+  createInitialViscosityValues,
+  getMixingDetailsRows,
+  hydrateMixingDetailsValuesFromSections,
+  hydrateViscosityValuesFromSections,
+  mergeFinalMixEntrySchemaValues,
+  mergeMixingQualityChecksIntoValues,
+  pickFinalMixDetailsSchemaValues,
+  pickViscositySchemaValues,
+  resolveMixingDetailsSeed,
+  type QcMixingQualityCheckDefinition,
+} from "../../../../../hooks/user/qualityControl/qcMixingTables";
+import {
+  createInitialHardwareProcessValues,
+  isQcHardwareProcessSubType,
+} from "../../../../../hooks/user/qualityControl/qcHardwareTables";
+import {
+  createInitialCastingValues,
+  hydrateCastingValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcCastingTables";
+import {
+  createInitialCuringValues,
+  getCuringSetupField,
+  hydrateCuringValuesFromSections,
+  setCuringSetupField,
+} from "../../../../../hooks/user/qualityControl/qcCuringTables";
+import {
+  createInitialDeCoringValues,
+  hydrateDeCoringValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcDeCoringTables";
+import {
+  createInitialTrimmingValues,
+  hydrateTrimmingValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcTrimmingTables";
+import {
+  createInitialDualPostCureValues,
+  createInitialPostCureValues,
+  hydratePostCureValuesFromSections,
+  postCureFormValuesHaveUserData,
+} from "../../../../../hooks/user/qualityControl/qcPostCureTables";
+import {
+  createInitialNdtValues,
+  hydrateNdtValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcNdtTables";
+import {
+  buildInitialStfValuesForMotor,
+  createInitialStfValues,
+} from "../../../../../hooks/user/qualityControl/qcStfTables";
+import {
+  createInitialPropellantValues,
+  hydratePropellantValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcPropellantTables";
+import { resolveQcPropellantPremixCount } from "../../../../../hooks/user/qualityControl/qcPropellantConfig";
+import {
+  createInitialWeighmentValues,
+  hydrateWeighmentValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcWeighmentTables";
+import {
+  createInitialRevalidationSchemaValues,
+  hydrateRevalidationValuesFromSections,
+} from "../../../../../hooks/user/qualityControl/qcRawMaterialRevalidationTable";
+const S = STRINGS.QUALITY_CONTROL.QC_DIVISION;
+
+export type QCDivisionEntryUnitActions = {
+  show?: boolean;
+  canAct?: boolean;
+  actionLoading?: boolean;
+  isEditMode?: boolean;
+  saveDraftLabel?: string;
+  submitLabel?: string;
+  draftConfirmTitle?: string;
+  draftConfirmMessage?: string;
+  submitConfirmTitle?: string;
+  submitConfirmMessage?: string;
+  showViewDetails?: boolean;
+  canViewDetails?: boolean;
+  viewDetailsLabel?: string;
+  onSaveDraft?: () => void;
+  onSubmit?: () => void;
+  onViewDetails?: () => void;
+};
+
+type QCDivisionEntryPanelProps = {
+  entry: QcDivisionEntry;
+  entryValues: QcDivisionEntryValues;
+  schema: SchemaDocumentV2 | null;
+  solidSchema?: SchemaDocumentV2 | null;
+  liquidSchema?: SchemaDocumentV2 | null;
+  subDepartmentId?: number;
+  batchId?: string;
+  divisionAutoPopulateData?: Record<string, unknown> | null;
+  mixingQualityCheckDefinitions?: QcMixingQualityCheckDefinition[] | null;
+  batchPayload?: unknown;
+  readOnly?: boolean;
+  /** Waiting/Approved lock — disable edits without details theme. */
+  fieldsDisabled?: boolean;
+  schemaLoading?: boolean;
+  schemaError?: string | null;
+  onEntryValuesChange: (
+    entryId: string,
+    values: SchemaFormValues | ((prev: SchemaFormValues) => SchemaFormValues),
+  ) => void;
+  onEntryLiquidValuesChange: (entryId: string, values: SchemaFormValues) => void;
+  onRemoveEntry: (entryId: string) => void;
+  unitActions?: QCDivisionEntryUnitActions | null;
+  canResetPostCureSetup?: boolean;
+  onResetPostCureSetup?: () => void;
+  /** Per-entry field errors (REVALIDATION paths: rows.{i}.RESULT, …). */
+  validationErrors?: Record<string, string> | null;
+  /** Clear a single field error (Post Cure / RMP-parity clear-on-edit). */
+  clearFieldError?: (path: string) => void;
+};
+
+const QCDivisionEntryPanel = ({
+  entry,
+  entryValues,
+  schema,
+  solidSchema = null,
+  liquidSchema = null,
+  subDepartmentId,
+  batchId,
+  divisionAutoPopulateData = null,
+  mixingQualityCheckDefinitions = null,
+  batchPayload = null,
+  readOnly = false,
+  fieldsDisabled = false,
+  schemaLoading = false,
+  schemaError = null,
+  onEntryValuesChange,
+  onEntryLiquidValuesChange,
+  onRemoveEntry,
+  unitActions = null,
+  canResetPostCureSetup = false,
+  onResetPostCureSetup,
+  validationErrors = null,
+  clearFieldError,
+}: QCDivisionEntryPanelProps) => {
+  const BRAND = QC_DIVISION_BRAND;
+
+  const resolvedSchema = useMemo(() => {
+    if (!schema) return null;
+    if (
+      entry.kind === "MIXING_PREMIX" ||
+      entry.kind === "MIXING_FINAL_MIX" ||
+      entry.kind === "HARDWARE_PROCESS" ||
+      entry.kind === "CASTING_MOTOR" ||
+      entry.kind === "CURING_MOTOR" ||
+      entry.kind === "DE_CORING_MOTOR" ||
+      entry.kind === "TRIMMING_MOTOR" ||
+      entry.kind === "POST_CURE_MOTOR" ||
+      entry.kind === "NDT_MOTOR" ||
+      entry.kind === "STF" ||
+      entry.kind === "PROPELLANT_MOTOR" ||
+      entry.kind === "PROPELLANT_PROCESS"
+    ) {
+      return null;
+    }
+
+    return schema;
+  }, [entry.kind, schema, entry.entryId]);
+
+  const mixingPremixValues = useMemo(() => {
+    const saved = entryValues.schemaValues;
+    if (saved && Object.keys(saved).length > 0) return saved;
+    if (entry.savedSections?.length) {
+      return hydrateMixingDetailsValuesFromSections(entry.savedSections, "premix");
+    }
+    return createInitialPremixDetailsValues(mixingQualityCheckDefinitions);
+  }, [
+    entry.savedSections,
+    entryValues.schemaValues,
+    mixingQualityCheckDefinitions,
+  ]);
+
+  const premixAutoSeed = useMemo(
+    () =>
+      resolveMixingDetailsSeed({
+        variant: "premix",
+        premixNo: entry.premixNo,
+        autoPopulatePayload:
+          (divisionAutoPopulateData as { __manufacturingDivisionData?: unknown } | null)
+            ?.__manufacturingDivisionData ?? divisionAutoPopulateData,
+        batchPayload,
+      }),
+    [batchPayload, divisionAutoPopulateData, entry.premixNo],
+  );
+
+  const mixingViscosityValues = useMemo(() => {
+    const saved = entryValues.schemaValues;
+    if (saved && Object.keys(saved).length > 0) return saved;
+    if (entry.savedSections?.length) {
+      return hydrateViscosityValuesFromSections(entry.savedSections);
+    }
+    return createInitialViscosityValues();
+  }, [entry.savedSections, entryValues.schemaValues]);
+
+  const handleValuesChange = useCallback(
+    (valuesOrUpdater: SchemaFormValues | ((prev: SchemaFormValues) => SchemaFormValues)) => {
+      if (entry.kind === "MIXING_FINAL_MIX") {
+        // Viscosity table may pass viscosity-only or full blob — keep details, take viscosity from `values`.
+        const values =
+          typeof valuesOrUpdater === "function"
+            ? valuesOrUpdater(entryValues.schemaValues ?? {})
+            : valuesOrUpdater;
+        onEntryValuesChange(
+          entry.entryId,
+          mergeFinalMixEntrySchemaValues(
+            pickFinalMixDetailsSchemaValues(entryValues.schemaValues),
+            pickViscositySchemaValues(values),
+          ),
+        );
+        return;
+      }
+      onEntryValuesChange(entry.entryId, valuesOrUpdater);
+    },
+    [entry.entryId, entry.kind, entryValues.schemaValues, onEntryValuesChange],
+  );
+
+  // Seed Premix once when empty; merge master SPECIFICATION when quality checks arrive.
+  // Also run when read-only (Waiting/Approved) so empty headers after silent refresh
+  // still pick up manufacturing auto-seed for display / form state.
+  useEffect(() => {
+    if (entry.kind !== "MIXING_PREMIX") return;
+    if (!premixAutoSeed && !(mixingQualityCheckDefinitions?.length)) return;
+    const current = entryValues.schemaValues;
+    const hasKeys = Boolean(current && Object.keys(current).length > 0);
+    // Subscale: early seed may write PREMIX_DETAILS: [] before MDM defs arrive — reseed.
+    const parameterRowsEmpty =
+      !hasKeys ||
+      getMixingDetailsRows(current, "premix").every(
+        (row) =>
+          !String(row.PARAMETER_ID ?? "").trim() && !String(row.PARAMETER ?? "").trim(),
+      );
+
+    if (hasKeys && !(parameterRowsEmpty && mixingQualityCheckDefinitions?.length)) {
+      let next = mergeMixingQualityChecksIntoValues(
+        current,
+        "premix",
+        mixingQualityCheckDefinitions,
+      );
+      next = applyMixingDivisionEntryToValues(
+        next ?? current,
+        {
+          variant: "premix",
+          premixNo: entry.premixNo,
+          autoPopulatePayload: divisionAutoPopulateData,
+          batchPayload,
+          qualityCheckDefinitions: mixingQualityCheckDefinitions,
+        },
+        { onlyIfEmpty: true },
+      );
+      if (JSON.stringify(next) !== JSON.stringify(current)) {
+        onEntryValuesChange(entry.entryId, next);
+      }
+      return;
+    }
+    if (readOnly && !parameterRowsEmpty) return;
+    if (readOnly && !mixingQualityCheckDefinitions?.length) return;
+    const seeded = applyMixingDivisionEntryToValues(
+      createInitialPremixDetailsValues(mixingQualityCheckDefinitions),
+      {
+        variant: "premix",
+        premixNo: entry.premixNo,
+        autoPopulatePayload: divisionAutoPopulateData,
+        batchPayload,
+        qualityCheckDefinitions: mixingQualityCheckDefinitions,
+      },
+      { onlyIfEmpty: true },
+    );
+    onEntryValuesChange(entry.entryId, seeded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed/merge when entry identity / defs arrive
+  }, [
+    batchPayload,
+    divisionAutoPopulateData,
+    entry.entryId,
+    entry.kind,
+    entry.premixNo,
+    mixingQualityCheckDefinitions,
+    premixAutoSeed,
+    readOnly,
+  ]);
+
+  const handleLiquidValuesChange = useCallback(
+    (values: SchemaFormValues) => onEntryLiquidValuesChange(entry.entryId, values),
+    [entry.entryId, onEntryLiquidValuesChange],
+  );
+
+  const handleRemove = useCallback(() => onRemoveEntry(entry.entryId), [entry.entryId, onRemoveEntry]);
+
+  const headerActions = useMemo((): ReactNode => {
+    const showUnitActions = Boolean(unitActions?.show);
+    // Mixing units are managed via Mix Navigation — no remove control.
+    const showRemove =
+      !readOnly &&
+      !fieldsDisabled &&
+      entry.kind !== "REVALIDATION" &&
+      entry.kind !== "MIXING_PREMIX" &&
+      entry.kind !== "MIXING_FINAL_MIX" &&
+      entry.kind !== "HARDWARE_PROCESS" &&
+      entry.kind !== "CASTING_MOTOR" &&
+      entry.kind !== "CURING_MOTOR" &&
+      entry.kind !== "DE_CORING_MOTOR" &&
+      entry.kind !== "TRIMMING_MOTOR" &&
+      entry.kind !== "POST_CURE_MOTOR" &&
+      entry.kind !== "NDT_MOTOR" &&
+      entry.kind !== "STF" &&
+      entry.kind !== "PROPELLANT_MOTOR" &&
+      entry.kind !== "PROPELLANT_PROCESS" &&
+      entry.kind !== "WEIGHTMENT_MOTOR";
+    const showResetPostCureSetup =
+      !readOnly &&
+      !fieldsDisabled &&
+      entry.kind === "POST_CURE_MOTOR" &&
+      canResetPostCureSetup;
+    if (!showUnitActions && !showRemove && !showResetPostCureSetup) return null;
+
+    return (
+      <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap" justifyContent="flex-end">
+        {showUnitActions ? (
+          <>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={
+                readOnly || fieldsDisabled || !unitActions?.canAct || unitActions?.actionLoading
+              }
+              onClick={unitActions?.onSaveDraft}
+              sx={{ textTransform: "none", whiteSpace: "nowrap" }}
+            >
+              {unitActions?.saveDraftLabel ?? S.SAVE_UNIT_DRAFT}
+            </Button>
+            <SubmitForApprovalButton
+              disabled={
+                readOnly || fieldsDisabled || !unitActions?.canAct || unitActions?.actionLoading
+              }
+              onClick={unitActions?.onSubmit}
+              label={unitActions?.submitLabel ?? S.SUBMIT_UNIT}
+            />
+            {showResetPostCureSetup ? (
+              <RemoveProcessButton
+                onClick={onResetPostCureSetup ?? (() => undefined)}
+                dangerColor={BRAND.danger}
+                tooltip={S.POST_CURE_CHANGE_OPERATION_TOOLTIP}
+              />
+            ) : null}
+          </>
+        ) : null}
+        {showRemove ? (
+          <RemoveProcessButton
+            onClick={handleRemove}
+            dangerColor={BRAND.danger}
+            tooltip={S.DIVISION_REMOVE_TOOLTIP}
+          />
+        ) : null}
+      </Stack>
+    );
+  }, [
+    BRAND.danger,
+    canResetPostCureSetup,
+    entry.kind,
+    fieldsDisabled,
+    handleRemove,
+    onResetPostCureSetup,
+    readOnly,
+    unitActions,
+  ]);
+
+  const formValues = useMemo(() => {
+    const saved = entryValues.schemaValues;
+    const hasSavedValues = Boolean(saved && Object.keys(saved).length > 0);
+    if (
+      entry.kind === "POST_CURE_MOTOR" &&
+      (!hasSavedValues || !postCureFormValuesHaveUserData(saved))
+    ) {
+      if (entry.savedSections?.length) {
+        return hydratePostCureValuesFromSections(
+          entry.savedSections,
+          entry.subType,
+          entry.inhibitorType,
+        );
+      }
+      if (hasSavedValues) return saved!;
+      return createInitialDualPostCureValues(entry.inhibitorType);
+    }
+    if (hasSavedValues) return saved!;
+    if (entry.kind === "REVALIDATION") {
+      if (entry.savedSections?.length) {
+        return hydrateRevalidationValuesFromSections(entry.savedSections);
+      }
+      return createInitialRevalidationSchemaValues();
+    }
+    if (entry.kind === "HARDWARE_PROCESS") {
+      const subType = String(entry.subType ?? "");
+      if (isQcHardwareProcessSubType(subType)) {
+        return createInitialHardwareProcessValues(subType);
+      }
+      return {};
+    }
+    if (entry.kind === "CASTING_MOTOR") {
+      if (entry.savedSections?.length) {
+        return hydrateCastingValuesFromSections(entry.savedSections);
+      }
+      return createInitialCastingValues();
+    }
+    if (entry.kind === "CURING_MOTOR") {
+      if (entry.savedSections?.length) {
+        let hydrated = hydrateCuringValuesFromSections(entry.savedSections);
+        if (!getCuringSetupField(hydrated, "CURING_TYPE") && entry.subType) {
+          hydrated = setCuringSetupField(hydrated, "CURING_TYPE", String(entry.subType));
+        }
+        return hydrated;
+      }
+      return createInitialCuringValues(
+        (entry.subType === "NORMAL" ||
+        entry.subType === "CONFINED" ||
+        entry.subType === "N2_PRESSURE"
+          ? entry.subType
+          : "") as "" | "NORMAL" | "CONFINED" | "N2_PRESSURE",
+      );
+    }
+    if (entry.kind === "DE_CORING_MOTOR") {
+      if (entry.savedSections?.length) {
+        return hydrateDeCoringValuesFromSections(entry.savedSections);
+      }
+      return createInitialDeCoringValues();
+    }
+    if (entry.kind === "TRIMMING_MOTOR") {
+      if (entry.savedSections?.length) {
+        return hydrateTrimmingValuesFromSections(entry.savedSections, {
+          motorReceivedAt: entry.motorReceivedDate ?? "",
+        });
+      }
+      return createInitialTrimmingValues(entry.motorReceivedDate ?? "");
+    }
+    if (entry.kind === "NDT_MOTOR") {
+      if (entry.savedSections?.length) {
+        return hydrateNdtValuesFromSections(entry.savedSections);
+      }
+      return createInitialNdtValues();
+    }
+    if (entry.kind === "STF") {
+      if (entry.motorId && divisionAutoPopulateData) {
+        return buildInitialStfValuesForMotor(divisionAutoPopulateData, entry.motorId);
+      }
+      return createInitialStfValues(
+        String(entry.subType ?? "").toUpperCase() === "MAIN_MOTOR" ? "MAIN_MOTOR" : "BEM",
+      );
+    }
+    if (entry.kind === "PROPELLANT_MOTOR" || entry.kind === "PROPELLANT_PROCESS") {
+      const fmCount = resolveQcPropellantPremixCount(divisionAutoPopulateData, batchPayload);
+      if (entry.savedSections?.length) {
+        return hydratePropellantValuesFromSections(entry.savedSections, fmCount);
+      }
+      return createInitialPropellantValues(fmCount);
+    }
+    if (entry.kind === "WEIGHTMENT_MOTOR") {
+      if (entry.savedSections?.length) {
+        return hydrateWeighmentValuesFromSections(entry.savedSections);
+      }
+      return createInitialWeighmentValues();
+    }
+    return resolvedSchema ? createQcInitialValues(resolvedSchema) : {};
+  }, [
+    batchPayload,
+    divisionAutoPopulateData,
+    entry.inhibitorType,
+    entry.kind,
+    entry.motorReceivedDate,
+    entry.savedSections,
+    entry.subType,
+    entryValues.schemaValues,
+    resolvedSchema,
+  ]);
+
+  const solidValues = useMemo(() => {
+    const saved = entryValues.schemaValues;
+    if (saved && Object.keys(saved).length > 0) return saved;
+    return solidSchema ? createQcInitialValues(solidSchema) : {};
+  }, [entryValues.schemaValues, solidSchema]);
+
+  const liquidValues = useMemo(() => {
+    const saved = entryValues.liquidSchemaValues;
+    if (saved && Object.keys(saved).length > 0) return saved;
+    return liquidSchema ? createQcInitialValues(liquidSchema) : {};
+  }, [entryValues.liquidSchemaValues, liquidSchema]);
+
+  if (entry.kind === "HARDWARE_PROCESS") {
+    return (
+      <Box
+        sx={
+          fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : undefined
+        }
+      >
+        <QCHardwareProcessPanel
+          subType={String(entry.subType ?? "")}
+          values={formValues}
+          onChange={handleValuesChange}
+          readOnly={readOnly}
+          headerActions={headerActions}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (entry.kind === "CASTING_MOTOR") {
+    return (
+      <Box
+        sx={
+          fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : undefined
+        }
+      >
+        <QCCastingMotorPanel
+          motorId={entry.motorId}
+          values={formValues}
+          onChange={handleValuesChange}
+          readOnly={readOnly}
+          headerActions={headerActions}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (entry.kind === "CURING_MOTOR") {
+    return (
+      <Box
+        sx={
+          fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : undefined
+        }
+      >
+        <QCCuringMotorPanel
+          motorId={entry.motorId}
+          curingSubType={entry.subType}
+          values={formValues}
+          onChange={handleValuesChange}
+          readOnly={readOnly}
+          headerActions={headerActions}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (entry.kind === "DE_CORING_MOTOR") {
+    return (
+      <QCDeCoringMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        validationErrors={validationErrors}
+      />
+    );
+  }
+
+  if (entry.kind === "TRIMMING_MOTOR") {
+    return (
+      <QCTrimmingMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        validationErrors={validationErrors}
+      />
+    );
+  }
+
+  if (entry.kind === "POST_CURE_MOTOR") {
+    return (
+      <QCPostCureMotorPanel
+        motorId={entry.motorId}
+        subType={entry.subType}
+        inhibitorType={entry.inhibitorType}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        validationErrors={validationErrors}
+        clearFieldError={clearFieldError}
+      />
+    );
+  }
+
+  if (entry.kind === "NDT_MOTOR") {
+    return (
+      <QCNdtMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        validationErrors={validationErrors}
+      />
+    );
+  }
+
+  if (entry.kind === "STF") {
+    return (
+      <QCStfMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        batchId={batchId}
+      />
+    );
+  }
+
+  if (entry.kind === "PROPELLANT_MOTOR" || entry.kind === "PROPELLANT_PROCESS") {
+    return (
+      <QCPropellantMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        batchPayload={divisionAutoPopulateData ?? batchPayload}
+        validationErrors={validationErrors}
+      />
+    );
+  }
+
+  if (entry.kind === "WEIGHTMENT_MOTOR") {
+    return (
+      <QCWeighmentMotorPanel
+        motorId={entry.motorId}
+        values={formValues}
+        onChange={handleValuesChange}
+        readOnly={readOnly}
+        disabled={fieldsDisabled}
+        headerActions={headerActions}
+        validationErrors={validationErrors}
+      />
+    );
+  }
+
+  if (entry.kind === "REVALIDATION") {
+    return (
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${BRAND.border}`,
+          background: "#fff",
+          px: 1.5,
+          py: 1.25,
+          ...(fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : null),
+        }}
+      >
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          mb={1.25}
+          gap={1}
+          sx={{
+            pb: 1,
+            borderBottom: `1px solid ${alpha(BRAND.border, 0.55)}`,
+          }}
+        >
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+            {entry.label}
+          </Typography>
+          {headerActions}
+        </Stack>
+        <QCRawMaterialRevalidationTable
+          values={formValues}
+          onChange={handleValuesChange}
+          batchId={batchId}
+          readOnly={readOnly || fieldsDisabled}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (entry.kind === "MIXING_PREMIX") {
+    return (
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${BRAND.border}`,
+          background: BRAND.surface,
+          px: 1.5,
+          py: 1.25,
+          ...(fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : null),
+        }}
+      >
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} gap={1}>
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+            {entry.label}
+          </Typography>
+          {headerActions}
+        </Stack>
+        <QCMixingDetailsTable
+          variant="premix"
+          values={mixingPremixValues}
+          onChange={handleValuesChange}
+          readOnly={readOnly}
+          autoSeed={premixAutoSeed}
+          qualityCheckDefinitions={mixingQualityCheckDefinitions}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (entry.kind === "MIXING_FINAL_MIX") {
+    return (
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${BRAND.border}`,
+          background: BRAND.surface,
+          px: 1.5,
+          py: 1.25,
+          ...(fieldsDisabled && !readOnly
+            ? { pointerEvents: "none", userSelect: "none", opacity: 0.92 }
+            : null),
+        }}
+      >
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} gap={1}>
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+            {entry.label}
+          </Typography>
+          {headerActions}
+        </Stack>
+        <QCMixingViscosityTable
+          values={mixingViscosityValues}
+          onChange={handleValuesChange}
+          readOnly={readOnly}
+          validationErrors={validationErrors}
+        />
+      </Box>
+    );
+  }
+
+  if (!entryValues) return null;
+
+  if (!resolvedSchema) {
+    if (schemaLoading) {
+      return <QCSchemaBufferingLoader />;
+    }
+
+    if (readOnly && (entry.savedSections?.length ?? 0) > 0) {
+      return (
+        <Box
+          sx={{
+            borderRadius: 2.5,
+            border: `1px solid ${BRAND.border}`,
+            background: BRAND.surface,
+            px: 1.5,
+            py: 1.25,
+          }}
+        >
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 1 }}>
+            {entry.label}
+          </Typography>
+          <QCDivisionSavedSectionsDisplay sections={entry.savedSections ?? []} />
+        </Box>
+      );
+    }
+
+    if (readOnly) {
+      return (
+        <Box
+          sx={{
+            borderRadius: 2.5,
+            border: `1px solid ${BRAND.border}`,
+            background: BRAND.surface,
+            px: 1.5,
+            py: 1.25,
+          }}
+        >
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 0.5 }}>
+            {entry.label}
+          </Typography>
+          <Typography sx={{ fontSize: "0.76rem", color: BRAND.textSub }}>
+            {schemaError || S.SCHEMA_FETCH_ERROR}
+          </Typography>
+        </Box>
+      );
+    }
+
+    return null;
+  }
+
+  if (entry.kind === "BOTH_PREMIX") {
+    if (schemaLoading) {
+      return <QCSchemaBufferingLoader />;
+    }
+
+    if (!solidSchema || !liquidSchema) {
+      if (readOnly && (entry.savedSections?.length ?? 0) > 0) {
+        return (
+          <Box
+            sx={{
+              borderRadius: 2.5,
+              border: `1px solid ${BRAND.border}`,
+              background: BRAND.surface,
+              px: 1.5,
+              py: 1.25,
+            }}
+          >
+            <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 1 }}>
+              {entry.label}
+            </Typography>
+            <QCDivisionSavedSectionsDisplay sections={entry.savedSections ?? []} />
+          </Box>
+        );
+      }
+
+      if (readOnly) {
+        return (
+          <Box
+            sx={{
+              borderRadius: 2.5,
+              border: `1px solid ${BRAND.border}`,
+              background: BRAND.surface,
+              px: 1.5,
+              py: 1.25,
+            }}
+          >
+            <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary, mb: 0.5 }}>
+              {entry.label}
+            </Typography>
+            <Typography sx={{ fontSize: "0.76rem", color: BRAND.textSub }}>
+              {schemaError || S.SCHEMA_FETCH_ERROR}
+            </Typography>
+          </Box>
+        );
+      }
+      return null;
+    }
+
+    return (
+      <Box
+        sx={{
+          borderRadius: 2.5,
+          border: `1px solid ${BRAND.border}`,
+          background: BRAND.surface,
+          px: 1.5,
+          py: 1.25,
+        }}
+      >
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.5} gap={1}>
+          <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+            {entry.label}
+          </Typography>
+          {headerActions}
+        </Stack>
+
+                <Stack spacing={2}>
+          {(entry.savedSections?.length ?? 0) > 0 ? (
+            <QCDivisionSavedSectionsDisplay sections={entry.savedSections ?? []} />
+          ) : (
+            <Typography sx={{ fontSize: "0.76rem", color: BRAND.textSub }}>
+              {schemaError || S.SCHEMA_FETCH_ERROR}
+            </Typography>
+          )}
+        </Stack>
+      </Box>
+    );
+  }
+
+  // Motor kinds (TRIMMING / NDT / PROPELLANT / etc.) already early-return above
+  // with their own panels + headers. Code below only runs for remaining kinds
+  // (SIMPLE / STF / SOLID_PREMIX / LIQUID_PREMIX / PROCESSING_MATERIAL / …),
+  // so always show the entry header here.
+  return (
+    <Box
+      sx={{
+        borderRadius: 2.5,
+        border: `1px solid ${BRAND.border}`,
+        background: BRAND.surface,
+        px: 1.5,
+        py: 1.25,
+      }}
+    >
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} gap={1}>
+        <Typography sx={{ fontSize: "0.84rem", fontWeight: 800, color: BRAND.primary }}>
+          {entry.label}
+        </Typography>
+        {headerActions}
+      </Stack>
+
+      {(entry.savedSections?.length ?? 0) > 0 ? (
+        <QCDivisionSavedSectionsDisplay sections={entry.savedSections ?? []} />
+      ) : (
+        <Typography sx={{ fontSize: "0.76rem", color: BRAND.textSub }}>
+          {schemaError || S.SCHEMA_FETCH_ERROR}
+        </Typography>
+      )}
+    </Box>
+  );
+};
+
+export default memo(QCDivisionEntryPanel);

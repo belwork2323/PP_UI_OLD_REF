@@ -1,0 +1,578 @@
+import React, { type ReactNode } from "react";
+import {
+  Box,
+  Button,
+  IconButton,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+} from "@mui/material";
+import AddRoundedIcon from "@mui/icons-material/AddRounded";
+import DeleteOutlineRoundedIcon from "@mui/icons-material/DeleteOutlineRounded";
+import {
+  DISPATCH_YES_NO_OPTIONS,
+  nextFmColumnId,
+  type DispatchCheckPointRow,
+  type DispatchMotorData,
+  type DispatchPackingRow,
+  type DispatchParameterRow,
+  type DispatchPropellantRow,
+} from "../../../../data/models/user/DispatchMotorDataModel";
+import DispatchFileField from "./DispatchFileField";
+import { STRINGS } from "../../../../app/config/strings";
+import {
+  FieldGrid,
+  FieldLabel,
+  SectionCard,
+  TableSelectInput,
+  TableTextInput,
+  dispatchTableCellSx,
+  dispatchTableContainerSx,
+  dispatchTableHeaderCellSx,
+  dispatchTableInputSx,
+  dispatchTableRowSx,
+} from "./DispatchFormPrimitives";
+import { FieldLabelWithAsterisk } from "@/ui/components/common/FieldLabelWithAsterisk";
+import type { ValidationErrors as DispatchValidationErrors } from "@/data/validation/adapters/dispatch.validation";
+import FieldErrorText from "@/ui/components/validation/FieldErrorText";
+
+type Props = {
+  value: DispatchMotorData;
+  onChange: (next: DispatchMotorData) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  theme?: any;
+  validationErrors?: DispatchValidationErrors;
+};
+
+const dispatchTableRequiredHeaderLabelSx = {
+  display: "inline",
+  fontSize: "inherit",
+  fontWeight: "inherit",
+  color: "inherit",
+  mb: 0,
+} as const;
+
+const withFieldError = (node: ReactNode, message?: string, fieldPath?: string) => {
+  const control =
+    React.isValidElement(node) && message
+      ? React.cloneElement(node as React.ReactElement<{ error?: boolean }>, {
+          error: true,
+        })
+      : node;
+  return (
+    <Box {...(fieldPath ? { "data-dispatch-field": fieldPath } : {})}>
+      {control}
+      <FieldErrorText message={message} />
+    </Box>
+  );
+};
+
+const patch = <K extends keyof DispatchMotorData>(
+  value: DispatchMotorData,
+  key: K,
+  partial: Partial<DispatchMotorData[K]>,
+): DispatchMotorData => ({
+  ...value,
+  [key]: { ...value[key], ...partial },
+});
+
+const PropellantTable = ({
+  value,
+  onChange,
+  disabled,
+  readOnly,
+  errors,
+}: {
+  value: DispatchMotorData["PROPELLANT_PROPERTIES"];
+  onChange: (next: DispatchMotorData["PROPELLANT_PROPERTIES"]) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  errors?: DispatchValidationErrors;
+}) => {
+  const updateRow = (index: number, partial: Partial<DispatchPropellantRow>) => {
+    onChange({
+      ...value,
+      rows: value.rows.map((row, i) => (i === index ? { ...row, ...partial } : row)),
+    });
+  };
+
+  const updateFm = (rowIndex: number, col: string, cell: string) => {
+    onChange({
+      ...value,
+      rows: value.rows.map((row, i) =>
+        i === rowIndex ? { ...row, fmValues: { ...row.fmValues, [col]: cell } } : row,
+      ),
+    });
+  };
+
+  const addColumn = () => {
+    const col = nextFmColumnId(value.fmColumns);
+    onChange({
+      fmColumns: [...value.fmColumns, col],
+      rows: value.rows.map((row) => ({
+        ...row,
+        fmValues: { ...row.fmValues, [col]: row.fmValues[col] ?? "" },
+      })),
+    });
+  };
+
+  const deleteColumn = (col: string) => {
+    if (value.fmColumns.length <= 1) return;
+    onChange({
+      fmColumns: value.fmColumns.filter((entry) => entry !== col),
+      rows: value.rows.map((row) => {
+        const next = { ...row.fmValues };
+        delete next[col];
+        return { ...row, fmValues: next };
+      }),
+    });
+  };
+
+  let serial = 0;
+
+  return (
+    <Box>
+      {!readOnly ? (
+        <Stack direction="row" justifyContent="flex-end" gap={1} mb={1}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddRoundedIcon />}
+            disabled={disabled}
+            onClick={addColumn}
+            sx={{ textTransform: "none", fontWeight: 700, fontSize: "0.72rem" }}
+          >
+            Add Column
+          </Button>
+        </Stack>
+      ) : null}
+      <TableContainer sx={{ ...dispatchTableContainerSx, overflowX: "auto" }}>
+        <Table size="small" sx={{ minWidth: 720 }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={dispatchTableHeaderCellSx(true)}>Sr. No.</TableCell>
+              <TableCell sx={dispatchTableHeaderCellSx(false)}>Properties</TableCell>
+              <TableCell sx={dispatchTableHeaderCellSx(false)}>
+                <FieldLabelWithAsterisk
+                  label="Specs"
+                  required
+                  sx={dispatchTableRequiredHeaderLabelSx}
+                />
+              </TableCell>
+              {value.fmColumns.map((col) => (
+                <TableCell key={col} sx={dispatchTableHeaderCellSx(false)}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" gap={0.5}>
+                    <FieldLabelWithAsterisk
+                      label={col.replace("_", " ")}
+                      required
+                      sx={dispatchTableRequiredHeaderLabelSx}
+                    />
+                    {!readOnly && value.fmColumns.length > 1 ? (
+                      <IconButton size="small" onClick={() => deleteColumn(col)} disabled={disabled}>
+                        <DeleteOutlineRoundedIcon sx={{ fontSize: 14 }} />
+                      </IconButton>
+                    ) : null}
+                  </Stack>
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {value.rows.map((row, index) => {
+              if (row.rowType === "header") {
+                return (
+                  <TableRow key={`prop-header-${index}`}>
+                    <TableCell
+                      colSpan={3 + value.fmColumns.length}
+                      sx={{ ...dispatchTableCellSx, fontWeight: 800, background: "rgba(27,79,114,0.06)" }}
+                    >
+                      {row.headerLabel}
+                    </TableCell>
+                  </TableRow>
+                );
+              }
+              serial += 1;
+              return (
+                <TableRow key={`prop-${index}`} sx={dispatchTableRowSx(index)}>
+                  <TableCell sx={{ ...dispatchTableCellSx, fontWeight: 600 }}>{serial}</TableCell>
+                  <TableCell sx={{ ...dispatchTableCellSx, fontWeight: 600 }}>{row.PROPERTY}</TableCell>
+                  <TableCell sx={dispatchTableCellSx}>
+                    {withFieldError(
+                      <TableTextInput
+                        value={row.SPECIFICATION}
+                        onChange={(next) => updateRow(index, { SPECIFICATION: next })}
+                        disabled={disabled}
+                        readOnly={readOnly}
+                      />,
+                      errors?.[`PROPELLANT_PROPERTIES.rows.${index}.SPECIFICATION`],
+                      `PROPELLANT_PROPERTIES.rows.${index}.SPECIFICATION`,
+                    )}
+                  </TableCell>
+                  {value.fmColumns.map((col) => (
+                    <TableCell key={`${index}-${col}`} sx={dispatchTableCellSx}>
+                      {withFieldError(
+                        <TableTextInput
+                          value={row.fmValues[col] ?? ""}
+                          onChange={(next) => updateFm(index, col, next)}
+                          disabled={disabled}
+                          readOnly={readOnly}
+                        />,
+                        errors?.[`PROPELLANT_PROPERTIES.rows.${index}.fmValues.${col}`],
+                        `PROPELLANT_PROPERTIES.rows.${index}.fmValues.${col}`,
+                      )}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Box>
+  );
+};
+
+const ObservationTable = ({
+  rows,
+  labelKey,
+  onChange,
+  disabled,
+  readOnly,
+  labelHeader,
+  errorPrefix,
+  errors,
+}: {
+  rows: DispatchParameterRow[] | DispatchCheckPointRow[] | DispatchPackingRow[];
+  labelKey: "PARAMETER" | "CHECK_POINT" | "NOMENCLATURE";
+  onChange: (rows: DispatchParameterRow[] | DispatchCheckPointRow[] | DispatchPackingRow[]) => void;
+  disabled?: boolean;
+  readOnly?: boolean;
+  labelHeader: string;
+  errorPrefix: string;
+  errors?: DispatchValidationErrors;
+}) => {
+  let serial = 0;
+  return (
+    <TableContainer sx={dispatchTableContainerSx}>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell sx={dispatchTableHeaderCellSx(true)}>Sr. No.</TableCell>
+            <TableCell sx={dispatchTableHeaderCellSx(false)}>{labelHeader}</TableCell>
+            <TableCell sx={dispatchTableHeaderCellSx(false)}>
+              <FieldLabelWithAsterisk
+                label="Observations"
+                required
+                sx={dispatchTableRequiredHeaderLabelSx}
+              />
+            </TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map((row, index) => {
+            if ("rowType" in row && row.rowType === "header") {
+              return (
+                <TableRow key={`hdr-${index}`}>
+                  <TableCell
+                    colSpan={3}
+                    sx={{ ...dispatchTableCellSx, fontWeight: 800, background: "rgba(27,79,114,0.06)" }}
+                  >
+                    {(row as DispatchParameterRow).headerLabel}
+                  </TableCell>
+                </TableRow>
+              );
+            }
+            serial += 1;
+            const label = String(row[labelKey as keyof typeof row] ?? "");
+            return (
+              <TableRow key={`row-${index}`} sx={dispatchTableRowSx(index)}>
+                <TableCell sx={{ ...dispatchTableCellSx, fontWeight: 600 }}>{serial}</TableCell>
+                <TableCell sx={{ ...dispatchTableCellSx, fontWeight: 600 }}>{label}</TableCell>
+                <TableCell sx={dispatchTableCellSx}>
+                  {withFieldError(
+                    <TableTextInput
+                      value={String(row.OBSERVATION ?? "")}
+                      onChange={(next) =>
+                        onChange(
+                          rows.map((entry, i) =>
+                            i === index ? { ...entry, OBSERVATION: next } : entry,
+                          ),
+                        )
+                      }
+                      disabled={disabled}
+                      readOnly={readOnly}
+                      multiline
+                      minRows={2}
+                    />,
+                    errors?.[`${errorPrefix}.${index}.OBSERVATION`],
+                    `${errorPrefix}.${index}.OBSERVATION`,
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+};
+
+const DispatchMotorPanel = ({
+  value,
+  onChange,
+  disabled = false,
+  readOnly = false,
+  theme,
+  validationErrors,
+}: Props) => (
+  <Box>
+    <SectionCard title="Propellant Properties Details" theme={theme}>
+      <PropellantTable
+        value={value.PROPELLANT_PROPERTIES}
+        onChange={(next) => onChange(patch(value, "PROPELLANT_PROPERTIES", next))}
+        disabled={disabled}
+        readOnly={readOnly}
+        errors={validationErrors}
+      />
+    </SectionCard>
+
+    <SectionCard title="Waiver Details" theme={theme}>
+      <FieldLabel>Waiver Details, if any</FieldLabel>
+      {withFieldError(
+        <TableTextInput
+          value={value.WAIVER_DETAILS.WAIVER_AVAILABLE}
+          onChange={(next) =>
+            onChange(patch(value, "WAIVER_DETAILS", { WAIVER_AVAILABLE: next }))
+          }
+          disabled={disabled}
+          readOnly={readOnly}
+          multiline
+          minRows={3}
+          placeholder="Enter waiver details"
+        />,
+        validationErrors?.["WAIVER_DETAILS.WAIVER_AVAILABLE"],
+        "WAIVER_DETAILS.WAIVER_AVAILABLE",
+      )}
+    </SectionCard>
+
+    <SectionCard title="Rocket Motor Inspection" theme={theme}>
+      <ObservationTable
+        rows={value.ROCKET_MOTOR_INSPECTION.rows}
+        labelKey="PARAMETER"
+        labelHeader="Parameter"
+        errorPrefix="ROCKET_MOTOR_INSPECTION.rows"
+        onChange={(rows) =>
+          onChange(patch(value, "ROCKET_MOTOR_INSPECTION", { rows: rows as DispatchParameterRow[] }))
+        }
+        disabled={disabled}
+        readOnly={readOnly}
+        errors={validationErrors}
+      />
+    </SectionCard>
+
+    <SectionCard title="Vehicle Details" theme={theme}>
+      <ObservationTable
+        rows={value.VEHICLE_DETAILS.rows}
+        labelKey="CHECK_POINT"
+        labelHeader="Check Point"
+        errorPrefix="VEHICLE_DETAILS.rows"
+        onChange={(rows) =>
+          onChange(patch(value, "VEHICLE_DETAILS", { rows: rows as DispatchCheckPointRow[] }))
+        }
+        disabled={disabled}
+        readOnly={readOnly}
+        errors={validationErrors}
+      />
+    </SectionCard>
+
+    <SectionCard title="Rocket Motor Packing Details" theme={theme}>
+      <ObservationTable
+        rows={value.ROCKET_MOTOR_PACKING.tableRows}
+        labelKey="NOMENCLATURE"
+        labelHeader="Nomenclature"
+        errorPrefix="ROCKET_MOTOR_PACKING.tableRows"
+        onChange={(rows) =>
+          onChange(
+            patch(value, "ROCKET_MOTOR_PACKING", {
+              tableRows: rows as DispatchPackingRow[],
+            }),
+          )
+        }
+        disabled={disabled}
+        readOnly={readOnly}
+        errors={validationErrors}
+      />
+      <FieldGrid columns={2}>
+        <Box>
+          <FieldLabelWithAsterisk label="Nitrogen gas purging" required />
+          {withFieldError(
+            <TableSelectInput
+              value={value.ROCKET_MOTOR_PACKING.NITROGEN_GAS_PURGING}
+              onChange={(next) =>
+                onChange(
+                  patch(value, "ROCKET_MOTOR_PACKING", {
+                    NITROGEN_GAS_PURGING: next,
+                    NITROGEN_PURGING_PRESSURE:
+                      next === "YES" ? value.ROCKET_MOTOR_PACKING.NITROGEN_PURGING_PRESSURE : "",
+                  }),
+                )
+              }
+              options={DISPATCH_YES_NO_OPTIONS}
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["ROCKET_MOTOR_PACKING.NITROGEN_GAS_PURGING"],
+            "ROCKET_MOTOR_PACKING.NITROGEN_GAS_PURGING",
+          )}
+        </Box>
+        {value.ROCKET_MOTOR_PACKING.NITROGEN_GAS_PURGING === "YES" ? (
+          <Box>
+            <FieldLabelWithAsterisk label="If Yes — Enter Pressure" required />
+            {withFieldError(
+              <TableTextInput
+                value={value.ROCKET_MOTOR_PACKING.NITROGEN_PURGING_PRESSURE}
+                onChange={(next) =>
+                  onChange(patch(value, "ROCKET_MOTOR_PACKING", { NITROGEN_PURGING_PRESSURE: next }))
+                }
+                disabled={disabled}
+                readOnly={readOnly}
+              />,
+              validationErrors?.["ROCKET_MOTOR_PACKING.NITROGEN_PURGING_PRESSURE"],
+              "ROCKET_MOTOR_PACKING.NITROGEN_PURGING_PRESSURE",
+            )}
+          </Box>
+        ) : null}
+        <Box>
+          <FieldLabelWithAsterisk label="Labelling of motor" required />
+          {withFieldError(
+            <TableSelectInput
+              value={value.ROCKET_MOTOR_PACKING.LABELLING_OF_MOTOR}
+              onChange={(next) =>
+                onChange(patch(value, "ROCKET_MOTOR_PACKING", { LABELLING_OF_MOTOR: next }))
+              }
+              options={DISPATCH_YES_NO_OPTIONS}
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["ROCKET_MOTOR_PACKING.LABELLING_OF_MOTOR"],
+            "ROCKET_MOTOR_PACKING.LABELLING_OF_MOTOR",
+          )}
+        </Box>
+      </FieldGrid>
+      <Box sx={{ mt: 1.5 }}>
+        {withFieldError(
+          <DispatchFileField
+            label="Upload Dispatch Photos"
+            files={value.ROCKET_MOTOR_PACKING.DISPATCH_PHOTOS}
+            onChange={(next) =>
+              onChange(patch(value, "ROCKET_MOTOR_PACKING", { DISPATCH_PHOTOS: next }))
+            }
+            disabled={disabled}
+            readOnly={readOnly}
+            multiple
+            acceptMode="imageVideo"
+          />,
+          validationErrors?.["ROCKET_MOTOR_PACKING.DISPATCH_PHOTOS"],
+          "ROCKET_MOTOR_PACKING.DISPATCH_PHOTOS",
+        )}
+      </Box>
+    </SectionCard>
+
+    <SectionCard title="Safety Clearance" theme={theme}>
+      <FieldGrid columns={2}>
+        <Box>
+          <FieldLabelWithAsterisk label="Safety Clearance for Dispatch Accorded" required />
+          {withFieldError(
+            <TableSelectInput
+              value={value.SAFETY_CLEARANCE.SAFETY_CLEARANCE_STATUS}
+              onChange={(next) =>
+                onChange(patch(value, "SAFETY_CLEARANCE", { SAFETY_CLEARANCE_STATUS: next }))
+              }
+              options={DISPATCH_YES_NO_OPTIONS}
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["SAFETY_CLEARANCE.SAFETY_CLEARANCE_STATUS"],
+            "SAFETY_CLEARANCE.SAFETY_CLEARANCE_STATUS",
+          )}
+        </Box>
+        <Box sx={{ gridColumn: { xs: "1", md: "1 / -1" } }}>
+          {withFieldError(
+            <DispatchFileField
+              label="Upload Clearance Certificate"
+              required
+              files={value.SAFETY_CLEARANCE.CLEARANCE_CERTIFICATE}
+              onChange={(next) =>
+                onChange(patch(value, "SAFETY_CLEARANCE", { CLEARANCE_CERTIFICATE: next }))
+              }
+              disabled={disabled}
+              readOnly={readOnly}
+              multiple={false}
+              acceptMode="imageVideoPdf"
+              emptyLabel={STRINGS.DISPATCH.FILE_EMPTY_CERTIFICATE}
+            />,
+            validationErrors?.["SAFETY_CLEARANCE.CLEARANCE_CERTIFICATE"],
+            "SAFETY_CLEARANCE.CLEARANCE_CERTIFICATE",
+          )}
+        </Box>
+      </FieldGrid>
+    </SectionCard>
+
+    <SectionCard title="Dispatch Team" theme={theme} mb={0}>
+      <FieldGrid columns={3}>
+        <Box>
+          <FieldLabelWithAsterisk label="QA Rep." required />
+          {withFieldError(
+            <TableTextInput
+              value={value.DISPATCH_TEAM.QA_REPRESENTATIVE}
+              onChange={(next) =>
+                onChange(patch(value, "DISPATCH_TEAM", { QA_REPRESENTATIVE: next }))
+              }
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["DISPATCH_TEAM.QA_REPRESENTATIVE"],
+            "DISPATCH_TEAM.QA_REPRESENTATIVE",
+          )}
+        </Box>
+        <Box>
+          <FieldLabelWithAsterisk label="Safety Rep." required />
+          {withFieldError(
+            <TableTextInput
+              value={value.DISPATCH_TEAM.SAFETY_REPRESENTATIVE}
+              onChange={(next) =>
+                onChange(patch(value, "DISPATCH_TEAM", { SAFETY_REPRESENTATIVE: next }))
+              }
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["DISPATCH_TEAM.SAFETY_REPRESENTATIVE"],
+            "DISPATCH_TEAM.SAFETY_REPRESENTATIVE",
+          )}
+        </Box>
+        <Box>
+          <FieldLabelWithAsterisk label="Project Rep." required />
+          {withFieldError(
+            <TableTextInput
+              value={value.DISPATCH_TEAM.PROJECT_REPRESENTATIVE}
+              onChange={(next) =>
+                onChange(patch(value, "DISPATCH_TEAM", { PROJECT_REPRESENTATIVE: next }))
+              }
+              disabled={disabled}
+              readOnly={readOnly}
+            />,
+            validationErrors?.["DISPATCH_TEAM.PROJECT_REPRESENTATIVE"],
+            "DISPATCH_TEAM.PROJECT_REPRESENTATIVE",
+          )}
+        </Box>
+      </FieldGrid>
+    </SectionCard>
+  </Box>
+);
+
+export default DispatchMotorPanel;

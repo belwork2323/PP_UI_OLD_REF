@@ -1,0 +1,411 @@
+const API_BASE = "/api/v1";
+
+export const AUTH_ENDPOINTS = {
+  LOGIN: `${API_BASE}/auth/login`,
+  LOGOUT: `${API_BASE}/auth/logout`,
+  REFRESH_TOKEN: `${API_BASE}/auth/refresh-token`,
+  RESET_PASSWORD: `${API_BASE}/auth/reset-password`,
+  GENERATE_CAPTCHA: `${API_BASE}/auth/generate-captcha`,
+  CHANGE_PASSWORD: `${API_BASE}/system/change-password`,
+};
+
+export const USER_ENDPOINTS = {
+  PROFILE: `${API_BASE}/users/profile`,
+  SUBDEPT_DASHBOARD_STATS: `${API_BASE}/user/subdepartment/dashboard/stats`,
+};
+
+export const FILE_ENDPOINTS = {
+  UPLOAD: `${API_BASE}/files/upload`,
+  DOWNLOAD: `${API_BASE}/files/download`,
+  DOWNLOAD_STREAM: `${API_BASE}/files/download/stream`,
+  DELETE: `${API_BASE}/files/delete`,
+  DELETE_TEMP: `${API_BASE}/files/delete/temp`,
+};
+
+export const APPROVER_ENDPOINTS = {
+  SUBDEPT_DASHBOARD_STATS: `${API_BASE}/approver/subdepartment/dashboard/stats`,
+  BATCH_LIST: `${API_BASE}/approver/subdepartment/batch-list`,
+  CHANGE_STATUS: `${API_BASE}/approver/form/change-status`,
+  PREMIX_CHANGE_STATUS: `${API_BASE}/approver/form/premix/change-status`,
+  MOTOR_CHANGE_STATUS: `${API_BASE}/approver/form/motor/change-status`,
+  /** QC Division unit/division approvals (premix, final mix, motor, revalidation, etc.). */
+  DIVISION_CHANGE_STATUS: `${API_BASE}/approver/form/division/change-status`,
+  /**
+   * Division catalog for resolving numeric divisionId.
+   * Reuses the shared QC divisions list (same payload as user create-form).
+   */
+  QC_DIVISIONS: `${API_BASE}/user/qc-division/divisions`,
+  FORM_PDF: `${API_BASE}/approver/form/pdf`,
+  RAW_MATERIAL_PROCUREMENT_LIST: `${API_BASE}/approver/raw-material-sourcing/list`,
+  RAW_MATERIAL_PROCUREMENT_CHANGE_STATUS: `${API_BASE}/approver/form/change-status`,
+  ROCKET_MOTOR_CASING_LIST: `${API_BASE}/approver/rocket-motor-casing/list`,
+  ROCKET_MOTOR_CASING_CHANGE_STATUS: `${API_BASE}/approver/rocket-motor-casing/change-status`,
+};
+
+export const ADMIN_ENDPOINTS = {
+  BASE: `${API_BASE}/admin`,
+  BATCH_LIST: `${API_BASE}/batches/all`,
+  CREATE_BATCH: (username) => `${API_BASE}/batches/create?user=${username}`,
+  DASHBOARD_ENDPOINTS: {
+    GET_STATS: `${API_BASE}/admin/dashboard/stats`,
+    GET_CHART_DATA: `${API_BASE}/admin/dashboard/chartData`,
+    GET_ACTIVE_BATCHES: `${API_BASE}/admin/dashboard/active-batches`,
+  },
+  PROJECT: {
+    LIST: `${API_BASE}/admin/project/list`,
+    STATS: `${API_BASE}/admin/project/stats`,
+    CREATE: `${API_BASE}/admin/project/create`,
+    UPDATE: `${API_BASE}/admin/project/update`,
+    DELETE: `${API_BASE}/admin/project/delete`,
+  },
+  MASTER_DATA: {
+    TYPES: `${API_BASE}/admin/master-data/types`,
+    LIST: (type: string) => `${API_BASE}/admin/master-data/${type}/list`,
+    CREATE: (type: string) => `${API_BASE}/admin/master-data/${type}/create`,
+    UPDATE: (type: string) => `${API_BASE}/admin/master-data/${type}/update`,
+    DELETE: (type: string) => `${API_BASE}/admin/master-data/${type}/delete`,
+    ENABLE: (type: string) => `${API_BASE}/admin/master-data/${type}/enable`,
+    MATERIALS: {
+      LIST: `${API_BASE}/admin/master-data/materials/list`,
+      CREATE: `${API_BASE}/admin/master-data/materials/create`,
+      UPDATE: `${API_BASE}/admin/master-data/materials/update`,
+      DELETE: `${API_BASE}/admin/master-data/materials/delete`,
+      ENABLE: `${API_BASE}/admin/master-data/materials/enable`,
+    },
+    INSULATION: {
+      LIST: `${API_BASE}/admin/master-data/insulation-specifications/list`,
+      CREATE: `${API_BASE}/admin/master-data/insulation-specifications/create`,
+      UPDATE: `${API_BASE}/admin/master-data/insulation-specifications/update`,
+      DELETE: `${API_BASE}/admin/master-data/insulation-specifications/delete`,
+      ENABLE: `${API_BASE}/admin/master-data/insulation-specifications/enable`,
+    },
+    MIXING_CYCLES: {
+      LIST: `${API_BASE}/admin/master-data/mixing-cycles/list`,
+      CREATE: `${API_BASE}/admin/master-data/mixing-cycles/create`,
+      UPDATE: `${API_BASE}/admin/master-data/mixing-cycles/update`,
+      DELETE: `${API_BASE}/admin/master-data/mixing-cycles/delete`,
+      ENABLE: `${API_BASE}/admin/master-data/mixing-cycles/enable`,
+    },
+    CURING_CYCLES: {
+      LIST: `${API_BASE}/admin/master-data/curing-cycles/list`,
+      CREATE: `${API_BASE}/admin/master-data/curing-cycles/create`,
+      UPDATE: `${API_BASE}/admin/master-data/curing-cycles/update`,
+      DELETE: `${API_BASE}/admin/master-data/curing-cycles/delete`,
+      ENABLE: `${API_BASE}/admin/master-data/curing-cycles/enable`,
+    },
+    QUALITY_CHECKS: {
+      LIST: `${API_BASE}/admin/master-data/quality-checks/list`,
+      CREATE: `${API_BASE}/admin/master-data/quality-checks/create`,
+      UPDATE: `${API_BASE}/admin/master-data/quality-checks/update`,
+      DELETE: `${API_BASE}/admin/master-data/quality-checks/delete`,
+      ENABLE: `${API_BASE}/admin/master-data/quality-checks/enable`,
+    },
+    QC_DIVISIONS: {
+      LIST: `${API_BASE}/admin/master-data/qc-divisions/list`,
+      CREATE: `${API_BASE}/admin/master-data/qc-divisions/create`,
+      UPDATE: `${API_BASE}/admin/master-data/qc-divisions/update`,
+      DELETE: `${API_BASE}/admin/master-data/qc-divisions/delete`,
+    },
+  },
+};
+
+export const USER_SOURCING_ENDPOINTS = {
+  ROCKET_CASING_LIST: `${API_BASE}/sourcing/rocket-casing/all`,
+  ROCKET_CASING_SUBMIT: (username) => `${API_BASE}/sourcing/rocket-casing/submit?user=${username}`,
+  RAW_MATERIAL_LIST: `${API_BASE}/sourcing/raw-material/all`,
+  RAW_MATERIAL_SUBMIT: (username) => `${API_BASE}/sourcing/raw-material/submit?user=${username}`,
+};
+
+export const DISPATCH_ENDPOINTS = {
+  BATCH_LIST: `${API_BASE}/batches/all`, // From legacy Dispatch.js
+  SUBMIT_FORM: `${API_BASE}/dispatch`, // From legacy DispatchMaterial.js
+};
+
+// Append these to your existing endPoints.js
+export const SOURCING_APPROVER_ENDPOINTS = {
+  PENDING_TASKS: `${API_BASE}/sourcing/approver/pending`,
+  ACTION: (type, id) => `${API_BASE}/sourcing/approver/action/${type}/${id}`,
+};
+
+export const USER_MANUFACTURING = {
+  RAW_MATERIAL: {
+    BATCH_LIST: `${API_BASE}/batches/all`,
+    SOLID_LIST: `${API_BASE}/solid/all`,
+    LIQUID_LIST: `${API_BASE}/liquid/all`,
+    SUBMIT_LIQUID: `${API_BASE}/liquid`,
+    SUBMIT_SOLID: `${API_BASE}/solid`,
+  },
+  CASEPREPARATION: {
+    CASE_PREP_ALL: `${API_BASE}/solid/approved`,
+    FETCH_SOLID_APPROVED: `${API_BASE}/case-prep/all`,
+    SUBMIT_CASE_PREP: `${API_BASE}/case-prep`,
+  },
+  MIXING: {
+    MIXING_LIST: `${API_BASE}/mixing-data/all`,
+    FETCH_APPROVED: `${API_BASE}/mixing-data/all`,
+  },
+  CASTING: {
+    CASTING_LIST: `${API_BASE}/casting-curing/all`,
+    FETCH_APPROVED: `${API_BASE}/solid/approved`,
+    SUBMIT: `${API_BASE}/casting-curing`,
+  },
+  POST_CURE: {
+    LIST: `${API_BASE}/case-prep/all`,
+    FETCH_APPROVED: `${API_BASE}/solid/approved`,
+    SUBMIT: `${API_BASE}/post-cure`,
+  },
+};
+
+export const USER_MANUFACTURING_APPROVER = {
+  ALL_BATCH: {
+    BATCH_LIST: `${API_BASE}/solid/draft`,
+  },
+  RAW_MATERIAL: {
+    SOLID_BATCH: (batchId) => `${API_BASE}/solid/${batchId}`,
+    LIQUID_BATCH: (batchId) => `${API_BASE}/liquid/${batchId}`,
+    UPDATE_SOLID_BATCH: (batchId) => `${API_BASE}/solid/update/${batchId}`,
+    UPDATE_LIQUID_BATCH: (batchId) => `${API_BASE}/liquid/update/${batchId}`,
+    DOWNLOAD_SOLID_BATCH: (batchId) => `${API_BASE}/reports/solid/download/${batchId}`,
+    DOWNLOAD_LIQUID_BATCH: (batchId) => `${API_BASE}/reports/liquid/download/${batchId}`,
+  },
+  CASE_PREP: {
+    CASE_PREP_BATCH: (batchId) => `${API_BASE}/case-prep/${batchId}`,
+    UPDATE_CASE_PREP: (batchId) => `${API_BASE}/case-prep/update/${batchId}`,
+    DOWNLOAD_CASE_PREP_BATCH: (batchId) => `${API_BASE}/reports/caseprep/download/${batchId}`,
+  },
+  MIXING: {
+    MIXING_BATCH: (batchId) => `${API_BASE}/mixing-data/${batchId}`,
+    UPDATE_MIXING: (batchId) => `${API_BASE}/mixing-data/update/${batchId}`,
+    DOWNLOAD_MIXING_BATCH: (batchId) => `${API_BASE}/reports/mixing-data/download/${batchId}`,
+  },
+  APPROVER: {
+    SOLID_PREP_LIST: `${API_BASE}/solid/draft`,
+    CASE_PREP_LIST: `${API_BASE}/case-prep/draft`,
+    MIXING_DATA_LIST: `${API_BASE}/mixing-data/draft`,
+    CASTING_CURING_LIST: `${API_BASE}/casting-curing/draft`,
+    POST_CURE_LIST: `${API_BASE}/post-cure/draft`,
+  },
+};
+
+// Add to your existing endPoints.js
+export const DISPATCH_APPROVER_ENDPOINTS = {
+  PENDING_LIST: `${API_BASE}/dispatch/draft`,
+  DETAILS: (batchId) => `${API_BASE}/dispatch/${batchId}`,
+  UPDATE_STATUS: (batchId) => `${API_BASE}/dispatch/update/${batchId}`,
+};
+
+// Append to quality_control_endpoints section in your endPoints.js
+export const QC_ENDPOINTS = {
+  BATCH_LIST: `${API_BASE}/batches/all`,
+  ALL_LOGS: `${API_BASE}/qualityControl/all`,
+  SUBMIT: (username) => `${API_BASE}/qualityControl/submit?user=${username}`,
+};
+// =============================
+// System lookup — no auth (GET)
+// Base URL: VITE_API_BASE_URL || http://localhost:8080/
+// Paths are relative to base URL (e.g. …/api/v1/system/roles)
+// =============================
+export const SYSTEM = {
+  ROLES: `${API_BASE}/system/roles`,
+  DEPARTMENTS: `${API_BASE}/system/departments`,
+  /** Optional ?departmentId= — omit or null for all */
+  SUB_DEPARTMENTS: `${API_BASE}/system/sub-departments`,
+  MIXERS: `${API_BASE}/system/mixers`,
+  BUILDINGS: `${API_BASE}/system/buildings`,
+  OVENS: `${API_BASE}/system/ovens`,
+  /** GET — NDT / radiography equipment master */
+  EQUIPMENT_LIST: `${API_BASE}/system/equipment-list`,
+  EQUIPMENT_TYPE_LIST: `${API_BASE}/system/equipment-type-list`,
+  /** GET — NDT / radiography beam energy master */
+  ENERGY_BEAM_LIST: `${API_BASE}/system/energy-beam-list`,
+  /** GET — unit master */
+  UNIT_LIST: `${API_BASE}/system/unit-list`,
+  MIXING_CYCLES: `${API_BASE}/system/mixing-cycles`,
+  /** POST body: `{ motorStage: "0" | "1" | "2" | "3" | "ALL" }` (string) */
+  MIXING_CYCLE_LIST: `${API_BASE}/system/mixing-cycle-list`,
+  /** GET — optional ?subBatchType= */
+  SUBSCALE_ARTICLES: `${API_BASE}/system/subscale-articles`,
+  GET_QUALITY_CHECKS: `${API_BASE}/user/subdepartment/mixing/quality-checks`,
+  MIXING_CYCLES_BY_PROJECTID: `${API_BASE}/system/mixing-cycles-project`,
+};
+
+// =============================
+// User Management endpoints
+// =============================
+export const USER_MANAGEMENT = {
+  GET_ALL_USERS: `${API_BASE}/admin/user/list`,
+  GET_STATS: `${API_BASE}/admin/user/stats`,
+  GET_USER_BY_ID: `${API_BASE}/admin/user/details`,
+  CREATE_USER: `${API_BASE}/admin/user/create`,
+  UPDATE_USER: `${API_BASE}/admin/user/update`,
+  DELETE_USER: `${API_BASE}/admin/user`,
+  ACTIVATE_USER: `${API_BASE}/admin/user/activate`,
+  PASSWORD_RESET_LIST: `${API_BASE}/admin/reset-password/list`,
+  PASSWORD_RESET_CHANGE_STATUS: `${API_BASE}/admin/reset-password/changeStatus`,
+};
+
+// =============================
+// User Management endpoints
+// =============================
+export const BATCH_MANAGEMENT = {
+  GET_ALL_BATCHES: `${API_BASE}/admin/batch/list`,
+  GET_STATS: `${API_BASE}/admin/batch/stats`,
+  GET_BATCH_BY_ID: `${API_BASE}/admin/batch/details`,
+  CREATE_BATCH: `${API_BASE}/admin/batch/create`,
+  UPDATE_BATCH: `${API_BASE}/admin/batch/update`,
+  DELETE_BATCH: `${API_BASE}/admin/batch`,
+};
+
+export const MOTOR_MANAGEMENT = {
+  LIST: `${API_BASE}/admin/motor/list`,
+  STATS: `${API_BASE}/admin/motor/stats`,
+  DETAILS: `${API_BASE}/admin/motor/details`,
+  DISCARD: `${API_BASE}/admin/motor/discard`,
+};
+
+export const BLOCKCHAIN = {
+  GET_BATCH_BY_ID: `${API_BASE}/admin/blockchain/fetch`,
+  GET_BLOCKCHAIN_EVENTS: `${API_BASE}/admin/blockchain/events`,
+  GET_BLOCKCHAIN_EVENTS_BY_BATCHID: `${API_BASE}/admin/blockchain/events-by-batchId`,
+};
+// System Manager Dashboard — 7 API endpoints (all POST)
+export const SYSTEM_MANAGER = {
+  STATS: `${API_BASE}/system-manager/dashboard/stats`,
+  CHART_DATA: `${API_BASE}/system-manager/dashboard/chartData`,
+  ACTIVE_BATCHES: `${API_BASE}/system-manager/dashboard/active-batches`,
+  ALERTS: `${API_BASE}/system-manager/dashboard/alerts`,
+  BLOCKCHAIN_EVENTS: `${API_BASE}/system-manager/dashboard/blockchain-events`,
+  BATCH_DEPT_STAGES: `${API_BASE}/system-manager/dashboard/batch-dept-stages`,
+  BATCH_SUBDEPT_STAGES: `${API_BASE}/system-manager/dashboard/batch-subdept-stages`,
+  BATCH_DETAILS: `${API_BASE}/system-manager/dashboard/batch/details`,
+};
+
+// =============================
+// User Subdepartment Operations endpoints
+// =============================
+export const USER_OPERATIONS_ENDPOINTS = {
+  BATCH_LIST: `${API_BASE}/user/subdepartment/batch-list`,
+  LOT_LIST: `${API_BASE}/user/raw-material-sourcing/form/lot-list`,
+  MATERIALS_LIST: `${API_BASE}/user/subdepartment/materials-list`,
+  MATERIAL_SPECIFICATION_LIST: `${API_BASE}/user/subdepartment/materials/specification-list`,
+  DIMENSIONAL_PARAMETERS_LIST: `${API_BASE}/user/subdepartment/dimensional/parameters-list`,
+  SOLID_PROCESSES_LIST: `${API_BASE}/user/subdepartment/solid/processes-list`,
+  MOTORS_STAGE_LIST: `${API_BASE}/user/subdepartment/motors-stage-list`,
+  APPROVED_MOTORS_LIST: `${API_BASE}/user/subdepartment/approved-motors-list`,
+  CASTING_STATION_LIST: `${API_BASE}/user/subdepartment/casting-station`,
+  MATERIAL_LOTS: `${API_BASE}/user/subdepartment/material-lots`,
+  INSULATION_TYPE_LIST: `${API_BASE}/user/subdepartment/insulation/type-list`,
+  FETCH_SPECIFICATION: `${API_BASE}/user/subdepartment/insulation/specification-list`,
+};
+
+export const USER_RAW_MATERIAL_PROCUREMENT_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/raw-material-sourcing/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/raw-material-sourcing/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/raw-material-sourcing/form/update`,
+  DELETE_FORM: `${API_BASE}/user/raw-material-sourcing/form/delete`,
+  STATS: `${API_BASE}/user/raw-material-sourcing/stats`,
+};
+
+export const USER_ROCKET_MOTOR_CASING_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/rocket-motor-casing/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/rocket-motor-casing/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/rocket-motor-casing/form/update`,
+  DELETE_FORM: `${API_BASE}/user/rocket-motor-casing/form/delete`,
+  CASING_LIST: `${API_BASE}/user/subdepartment/rocket-motor-casing/list`,
+  STATS: `${API_BASE}/user/rocket-motor-casing/stats`,
+};
+
+export const USER_RAW_MATERIAL_PREPARATION_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/raw-material-preparation/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/raw-material-preparation/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/raw-material-preparation/form/update`,
+};
+
+export const USER_CASE_PREPARATION_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/case-preparation/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/case-preparation/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/case-preparation/form/update`,
+  LINER_INGREDIENTS: `${API_BASE}/user/case-preparation/liner-ingredients`,
+};
+
+export const USER_MIXING_FORM_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/mixing/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/mixing/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/mixing/form/update`,
+};
+
+export const USER_CASTING_CURING_FORM_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/casting-curing/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/casting-curing/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/casting-curing/form/update`,
+  CURING_CYCLES: `${API_BASE}/user/casting-curing/curing-cycles`,
+};
+
+export const USER_POST_CURE_FORM_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/post-cure/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/post-cure/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/post-cure/form/update`,
+  INGREDIENTS: `${API_BASE}/user/post-cure/ingredients`,
+};
+
+export const USER_SUBSCALE_FORM_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/subscale/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/subscale/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/subscale/form/update`,
+};
+
+export const USER_TRIMMING_FORM_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/trimming/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/trimming/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/trimming/form/update`,
+};
+
+export const USER_RAW_MATERIAL_REVALIDATION_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/raw-material-revalidation/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/raw-material-revalidation/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/raw-material-revalidation/form/update`,
+};
+
+export const USER_QC_DIVISION_ENDPOINTS = {
+  DIVISIONS: `${API_BASE}/user/qc-division/divisions`,
+  DIVISION_DETAILS: `${API_BASE}/user/qc-division/division-details`,
+  CREATE_FORM: `${API_BASE}/user/qc-division/create`,
+  FORM_DETAILS: `${API_BASE}/user/qc-division/details`,
+  UPDATE_FORM: `${API_BASE}/user/qc-division/update`,
+};
+
+export const USER_NDT_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/ndt/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/ndt/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/ndt/form/update`,
+};
+
+export const USER_STF_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/stf/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/stf/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/stf/form/update`,
+  LIST_BEM_MOTORS: `${API_BASE}/user/stf/bem-motor/list`,
+  CREATE_BEM_MOTORS: `${API_BASE}/user/stf/bem-motor/create`,
+  BEM_MOTOR_DETAILS: `${API_BASE}/user/stf/bem-motor/details`,
+  UPDATE_BEM_MOTOR: `${API_BASE}/user/stf/bem-motor/update`,
+};
+
+export const APPROVER_STF_OTHER_BEM_ENDPOINTS = {
+  LIST: `${API_BASE}/approver/bem-motor/list`,
+  DETAILS: `${API_BASE}/user/stf/bem-motor/details`,
+  APPROVE: `${API_BASE}/approver/bem-motor/change-status`,
+};
+export const USER_DISPATCH_ENDPOINTS = {
+  CREATE_FORM: `${API_BASE}/user/dispatch/form/create`,
+  FORM_DETAILS: `${API_BASE}/user/dispatch/form/details`,
+  UPDATE_FORM: `${API_BASE}/user/dispatch/form/update`,
+  MOTOR_DETAILS: `${API_BASE}/user/dispatch/motor-details`,
+};
+
+export const BLOCKCHAIN_EXPLORER = {
+  CHANNELS: `${API_BASE}/admin/blockchain/channels`,
+  STATS: `${API_BASE}/admin/blockchain/stats`,
+  PEERS: `${API_BASE}/admin/blockchain/peers`,
+  TX_BY_ORG: `${API_BASE}/admin/blockchain/tx-by-org`,
+  CHART: `${API_BASE}/admin/blockchain/chart`,
+};
